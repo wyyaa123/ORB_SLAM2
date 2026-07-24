@@ -33,12 +33,12 @@ namespace ORB_SLAM2
                                                                        mnTrackReferenceForFrame(0), mnFuseTargetForKF(0), mnBALocalForKF(0), mnBAFixedForKF(0),
                                                                        mnLoopQuery(0), mnLoopWords(0), mnRelocQuery(0), mnRelocWords(0), mnBAGlobalForKF(0),
                                                                        fx(F.fx), fy(F.fy), cx(F.cx), cy(F.cy), invfx(F.invfx), invfy(F.invfy),
-                                                                       mbf(F.mbf), mb(F.mb), mThDepth(F.mThDepth), N(F.N), mvKeys(F.mvKeys), mvKeysUn(F.mvKeysUn),
+                                                                       mbf(F.mbf), mb(F.mb), mThDepth(F.mThDepth), N(F.N), NC(F.NC), mvKeys(F.mvKeys), mvKeysUn(F.mvKeysUn), mvBezierCurves(F.mvBezierCurves),
                                                                        mvuRight(F.mvuRight), mvDepth(F.mvDepth), mDescriptors(F.mDescriptors.clone()),
                                                                        mBowVec(F.mBowVec), mFeatVec(F.mFeatVec), mnScaleLevels(F.mnScaleLevels), mfScaleFactor(F.mfScaleFactor),
                                                                        mfLogScaleFactor(F.mfLogScaleFactor), mvScaleFactors(F.mvScaleFactors), mvLevelSigma2(F.mvLevelSigma2),
                                                                        mvInvLevelSigma2(F.mvInvLevelSigma2), mnMinX(F.mnMinX), mnMinY(F.mnMinY), mnMaxX(F.mnMaxX),
-                                                                       mnMaxY(F.mnMaxY), mK(F.mK), mvpMapPoints(F.mvpMapPoints), mpKeyFrameDB(pKFDB),
+                                                                       mnMaxY(F.mnMaxY), mK(F.mK), mvpMapPoints(F.mvpMapPoints), mvpMapCurves(F.mvpMapCurves), mpKeyFrameDB(pKFDB),
                                                                        mpORBvocabulary(F.mpORBvocabulary), mbFirstConnection(true), mpParent(NULL), mbNotErase(false),
                                                                        mbToBeErased(false), mbBad(false), mHalfBaseline(F.mb / 2), mpMap(pMap)
     {
@@ -208,6 +208,12 @@ namespace ORB_SLAM2
     {
         unique_lock<mutex> lock(mMutexFeatures);
         mvpMapPoints[idx] = pMP;
+    }
+
+    void KeyFrame::AddMapCurve(MapCurve *pMC, const size_t &idx)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        mvpMapCurves[idx] = pMC;
     }
 
     void KeyFrame::EraseMapPointMatch(const size_t &idx)

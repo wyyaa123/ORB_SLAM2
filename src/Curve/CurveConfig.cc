@@ -26,10 +26,11 @@ namespace ORB_SLAM2
         if (!settings.isOpened())
             throw std::runtime_error("Failed to open settings file: " + settingsPath);
 
-        enabled = ReadInt(settings, "Curve.UseCurve", 0) != 0;
+        enabled = ReadInt(settings, "Curve.UseCurve", 0) != 0 && isRGBD;
         minDepth = ReadFloat(settings, "Curve.MinDepth", 0.02f);
         maxDepth = ReadFloat(settings, "Curve.MaxDepth", 4.0f);
         validRatio = ReadFloat(settings, "Curve.ValidRatio", 0.3f);
+        BezierFitter = ReadInt(settings, "Curve.BezierFitter", 2);
     }
 
 } // namespace ORB_SLAM2

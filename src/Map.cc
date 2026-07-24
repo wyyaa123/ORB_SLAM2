@@ -43,6 +43,12 @@ namespace ORB_SLAM2
         mspMapPoints.insert(pMP);
     }
 
+    void Map::AddMapCurve(MapCurve *pMC)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mspMapCurves.insert(pMC);
+    }
+
     void Map::EraseMapPoint(MapPoint *pMP)
     {
         unique_lock<mutex> lock(mMutexMap);
@@ -50,6 +56,15 @@ namespace ORB_SLAM2
 
         // TODO: This only erase the pointer.
         // Delete the MapPoint
+    }
+
+    void Map::EraseMapCurve(MapCurve *pMC)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mspMapCurves.erase(pMC);
+
+        // TODO: This only erase the pointer.
+        // Delete the MapCurve
     }
 
     void Map::EraseKeyFrame(KeyFrame *pKF)
@@ -65,6 +80,12 @@ namespace ORB_SLAM2
     {
         unique_lock<mutex> lock(mMutexMap);
         mvpReferenceMapPoints = vpMPs;
+    }
+
+    void Map::SetReferenceMapCurves(const std::vector<MapCurve *> &vpMCs)
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        mvpReferenceMapCurves = vpMCs;
     }
 
     void Map::InformNewBigChange()
@@ -91,10 +112,22 @@ namespace ORB_SLAM2
         return vector<MapPoint *>(mspMapPoints.begin(), mspMapPoints.end());
     }
 
+    std::vector<MapCurve *> Map::GetAllMapCurves()
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        return vector<MapCurve *>(mspMapCurves.begin(), mspMapCurves.end());
+    }
+
     long unsigned int Map::MapPointsInMap()
     {
         unique_lock<mutex> lock(mMutexMap);
         return mspMapPoints.size();
+    }
+
+    long unsigned int Map::MapCurvesInMap()
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        return mspMapCurves.size();
     }
 
     long unsigned int Map::KeyFramesInMap()
@@ -109,6 +142,12 @@ namespace ORB_SLAM2
         return mvpReferenceMapPoints;
     }
 
+    std::vector<MapCurve *> Map::GetReferenceMapCurves()
+    {
+        unique_lock<mutex> lock(mMutexMap);
+        return mvpReferenceMapCurves;
+    }
+
     long unsigned int Map::GetMaxKFid()
     {
         unique_lock<mutex> lock(mMutexMap);
@@ -120,13 +159,18 @@ namespace ORB_SLAM2
         for (set<MapPoint *>::iterator sit = mspMapPoints.begin(), send = mspMapPoints.end(); sit != send; sit++)
             delete *sit;
 
+        for (set<MapCurve *>::iterator sit = mspMapCurves.begin(), send = mspMapCurves.end(); sit != send; sit++)
+            delete *sit;
+
         for (set<KeyFrame *>::iterator sit = mspKeyFrames.begin(), send = mspKeyFrames.end(); sit != send; sit++)
             delete *sit;
 
         mspMapPoints.clear();
+        mspMapCurves.clear();
         mspKeyFrames.clear();
         mnMaxKFid = 0;
         mvpReferenceMapPoints.clear();
+        mvpReferenceMapCurves.clear();
         mvpKeyFrameOrigins.clear();
     }
 

@@ -546,10 +546,7 @@ namespace ORB_SLAM2
 
         if (mState == NOT_INITIALIZED)
         {
-            if (mSensor == System::STEREO || mSensor == System::RGBD)
-                StereoInitialization();
-            else
-                MonocularInitialization();
+            StereoInitializationWithCurves();
 
             mpFrameDrawer->Update(this);
 
@@ -570,93 +567,22 @@ namespace ORB_SLAM2
                 if (mState == OK)
                 {
                     // Local Mapping might have changed some MapPoints tracked in last frame
-                    CheckReplacedInLastFrame();
+                    CheckReplacedInLastFrameWithCurves();
 
                     if (mVelocity.empty() || mCurrentFrame.mnId < mnLastRelocFrameId + 2)
                     {
-                        bOK = TrackReferenceKeyFrame();
+                        bOK = TrackReferenceKeyFrameWithCurves();
                     }
                     else
                     {
                         bOK = TrackWithMotionModel();
                         if (!bOK)
-                            bOK = TrackReferenceKeyFrame();
+                            bOK = TrackReferenceKeyFrameWithCurves();
                     }
                 }
                 else
                 {
                     bOK = Relocalization();
-                }
-            }
-            else
-            {
-                // Localization Mode: Local Mapping is deactivated
-
-                if (mState == LOST)
-                {
-                    bOK = Relocalization();
-                }
-                else
-                {
-                    if (!mbVO)
-                    {
-                        // In last frame we tracked enough MapPoints in the map
-
-                        if (!mVelocity.empty())
-                        {
-                            bOK = TrackWithMotionModel();
-                        }
-                        else
-                        {
-                            bOK = TrackReferenceKeyFrame();
-                        }
-                    }
-                    else
-                    {
-                        // In last frame we tracked mainly "visual odometry" points.
-
-                        // We compute two camera poses, one from motion model and one doing relocalization.
-                        // If relocalization is sucessfull we choose that solution, otherwise we retain
-                        // the "visual odometry" solution.
-
-                        bool bOKMM = false;
-                        bool bOKReloc = false;
-                        vector<MapPoint *> vpMPsMM;
-                        vector<bool> vbOutMM;
-                        cv::Mat TcwMM;
-                        if (!mVelocity.empty())
-                        {
-                            bOKMM = TrackWithMotionModel();
-                            vpMPsMM = mCurrentFrame.mvpMapPoints;
-                            vbOutMM = mCurrentFrame.mvbOutlier;
-                            TcwMM = mCurrentFrame.mTcw.clone();
-                        }
-                        bOKReloc = Relocalization();
-
-                        if (bOKMM && !bOKReloc)
-                        {
-                            mCurrentFrame.SetPose(TcwMM);
-                            mCurrentFrame.mvpMapPoints = vpMPsMM;
-                            mCurrentFrame.mvbOutlier = vbOutMM;
-
-                            if (mbVO)
-                            {
-                                for (int i = 0; i < mCurrentFrame.N; i++)
-                                {
-                                    if (mCurrentFrame.mvpMapPoints[i] && !mCurrentFrame.mvbOutlier[i])
-                                    {
-                                        mCurrentFrame.mvpMapPoints[i]->IncreaseFound();
-                                    }
-                                }
-                            }
-                        }
-                        else if (bOKReloc)
-                        {
-                            mbVO = false;
-                        }
-
-                        bOK = bOKReloc || bOKMM;
-                    }
                 }
             }
 
@@ -666,14 +592,6 @@ namespace ORB_SLAM2
             if (!mbOnlyTracking)
             {
                 if (bOK)
-                    bOK = TrackLocalMap();
-            }
-            else
-            {
-                // mbVO true means that there are few matches to MapPoints in the map. We cannot retrieve
-                // a local map and therefore we do not perform TrackLocalMap(). Once the system relocalizes
-                // the camera we will use the local map again.
-                if (bOK && !mbVO)
                     bOK = TrackLocalMap();
             }
 
@@ -857,6 +775,17 @@ namespace ORB_SLAM2
                 }
             }
 
+            for (int i = 0; i < mCurrentFrame.NC; i++)
+            {
+                std::vector<cv::Point3d> unprojectedPoints = mCurrentFrame.UnprojectCurve(i);
+                MapCurve *pNewMP = new MapCurve(unprojectedPoints, pKFini, mpMap);
+                pNewMP->AddObservation(pKFini, i);
+                pKFini->AddMapCurve(pNewMP, i);
+                mpMap->AddMapCurve(pNewMP);
+
+                mCurrentFrame.mvpMapCurves[i] = pNewMP;
+            }
+
             cout << "New map created with " << mpMap->MapPointsInMap() << " points" << endl;
 
             mpLocalMapper->InsertKeyFrame(pKFini);
@@ -867,11 +796,12 @@ namespace ORB_SLAM2
 
             mvpLocalKeyFrames.push_back(pKFini);
             mvpLocalMapPoints = mpMap->GetAllMapPoints();
+            mvpLocalMapCurves = mpMap->GetAllMapCurves();
             mpReferenceKF = pKFini;
             mCurrentFrame.mpReferenceKF = pKFini;
 
             mpMap->SetReferenceMapPoints(mvpLocalMapPoints);
-
+            mpMap->SetReferenceMapCurves(mvpLocalMapCurves);
             mpMap->mvpKeyFrameOrigins.push_back(pKFini);
 
             mpMapDrawer->SetCurrentCameraPose(mCurrentFrame.mTcw);
@@ -1072,6 +1002,37 @@ namespace ORB_SLAM2
         }
     }
 
+    void Tracking::CheckReplacedInLastFrameWithCurves()
+    {
+        for (int i = 0; i < mLastFrame.N; i++)
+        {
+            MapPoint *pMP = mLastFrame.mvpMapPoints[i];
+
+            if (pMP)
+            {
+                MapPoint *pRep = pMP->GetReplaced();
+                if (pRep)
+                {
+                    mLastFrame.mvpMapPoints[i] = pRep;
+                }
+            }
+        }
+
+        for (int i = 0; i < mLastFrame.NC; i++)
+        {
+            MapCurve *pMC = mLastFrame.mvpMapCurves[i];
+
+            if (pMC)
+            {
+                MapCurve *pRep = pMC->GetReplaced();
+                if (pRep)
+                {
+                    mLastFrame.mvpMapCurves[i] = pRep;
+                }
+            }
+        }
+    }
+
     bool Tracking::TrackReferenceKeyFrame()
     {
         // Compute Bag of Words vector
@@ -1089,6 +1050,50 @@ namespace ORB_SLAM2
 
         mCurrentFrame.mvpMapPoints = vpMapPointMatches;
         mCurrentFrame.SetPose(mLastFrame.mTcw);
+
+        Optimizer::PoseOptimization(&mCurrentFrame);
+
+        // Discard outliers
+        int nmatchesMap = 0;
+        for (int i = 0; i < mCurrentFrame.N; i++)
+        {
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                if (mCurrentFrame.mvbOutlier[i])
+                {
+                    MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+
+                    mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                    mCurrentFrame.mvbOutlier[i] = false;
+                    pMP->mbTrackInView = false;
+                    pMP->mnLastFrameSeen = mCurrentFrame.mnId;
+                    nmatches--;
+                }
+                else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                    nmatchesMap++;
+            }
+        }
+
+        return nmatchesMap >= 10;
+    }
+
+    bool Tracking::TrackReferenceKeyFrameWithCurves()
+    {
+        // Compute Bag of Words vector
+        mCurrentFrame.ComputeBoW();
+        mCurrentFrame.SetPose(mLastFrame.mTcw);
+
+        // We perform first an ORB matching with the reference keyframe
+        // If enough matches are found we setup a PnP solver
+        ORBmatcher matcher(0.7, true);
+        vector<MapPoint *> vpMapPointMatches;
+
+        int nmatches = matcher.SearchByBoW(mpReferenceKF, mCurrentFrame, vpMapPointMatches);
+
+        if (nmatches < 15)
+            return false;
+
+        mCurrentFrame.mvpMapPoints = vpMapPointMatches;
 
         Optimizer::PoseOptimization(&mCurrentFrame);
 
@@ -1183,6 +1188,69 @@ namespace ORB_SLAM2
     }
 
     bool Tracking::TrackWithMotionModel()
+    {
+        ORBmatcher matcher(0.9, true);
+
+        // Update last frame pose according to its reference keyframe
+        // Create "visual odometry" points if in Localization Mode
+        UpdateLastFrame();
+
+        mCurrentFrame.SetPose(mVelocity * mLastFrame.mTcw);
+
+        fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
+
+        // Project points seen in previous frame
+        int th;
+        if (mSensor != System::STEREO)
+            th = 15;
+        else
+            th = 7;
+        int nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, th, mSensor == System::MONOCULAR);
+
+        // If few matches, uses a wider window search
+        if (nmatches < 20)
+        {
+            fill(mCurrentFrame.mvpMapPoints.begin(), mCurrentFrame.mvpMapPoints.end(), static_cast<MapPoint *>(NULL));
+            nmatches = matcher.SearchByProjection(mCurrentFrame, mLastFrame, 2 * th, mSensor == System::MONOCULAR);
+        }
+
+        if (nmatches < 20)
+            return false;
+
+        // Optimize frame pose with all matches
+        Optimizer::PoseOptimization(&mCurrentFrame);
+
+        // Discard outliers
+        int nmatchesMap = 0;
+        for (int i = 0; i < mCurrentFrame.N; i++)
+        {
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                if (mCurrentFrame.mvbOutlier[i])
+                {
+                    MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+
+                    mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                    mCurrentFrame.mvbOutlier[i] = false;
+                    pMP->mbTrackInView = false;
+                    pMP->mnLastFrameSeen = mCurrentFrame.mnId;
+                    nmatches--;
+                }
+                else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                    nmatchesMap++;
+            }
+        }
+
+        if (mbOnlyTracking)
+        {
+            mbVO = nmatchesMap < 10;
+            return nmatches > 20;
+        }
+
+        return nmatchesMap >= 10;
+    }
+
+    bool Tracking::TrackWithMotionModelWithCurves()
     {
         ORBmatcher matcher(0.9, true);
 

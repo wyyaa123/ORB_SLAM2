@@ -42,6 +42,7 @@ namespace ORB_SLAM2
 #define FRAME_GRID_COLS 64
 
     class MapPoint;
+    class MapCurve;
     class KeyFrame;
 
     class Frame

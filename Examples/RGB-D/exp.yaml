@@ -72,7 +72,7 @@ Viewer.ViewpointF: 500
 # Edge Parameters
 #--------------------------------------------------------------------------------------------
 Curve.UseCurve: 1
-Curve.BezierFitter: 2
+Curve.BezierFitter: 1
 Curve.MinDepth: 0.02
 Curve.MaxDepth: 4.0
-Curve.ValidRatio: 0.3
+Curve.ValidRatio: 0.5

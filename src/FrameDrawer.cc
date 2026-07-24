@@ -127,7 +127,16 @@ namespace ORB_SLAM2
 
     cv::Mat FrameDrawer::DrawFrameCurves()
     {
-        cv::RNG rng(66);
+        static const cv::Scalar chainColors[] = {
+            cv::Scalar(255, 80, 80),
+            cv::Scalar(80, 255, 80),
+            cv::Scalar(80, 80, 255),
+            cv::Scalar(255, 220, 80),
+            cv::Scalar(255, 80, 220),
+            cv::Scalar(80, 220, 255),
+            cv::Scalar(220, 160, 80),
+            cv::Scalar(160, 80, 220)};
+        const size_t colorCount = sizeof(chainColors) / sizeof(chainColors[0]);
 
         cv::Mat im;
         std::vector<BezierCurve> currentCurves;
@@ -154,11 +163,8 @@ namespace ORB_SLAM2
             {
                 points.push_back(cv::Point(static_cast<int>(samples[j].x), static_cast<int>(samples[j].y)));
             }
-            int b = rng.uniform(0, 255);
-            int g = rng.uniform(0, 255);
-            int r = rng.uniform(0, 255);
-            cv::Vec3b color = cv::Vec3b(b, g, r);
-            cv::polylines(im, points, false, color, 2, cv::LINE_AA);
+            const size_t colorKey = currentCurves[i].hasEdgeChain() ? currentCurves[i].edgeChainId : i;
+            cv::polylines(im, points, false, chainColors[colorKey % colorCount], 2, cv::LINE_AA);
             points.clear();
         }
 

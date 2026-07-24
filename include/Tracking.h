@@ -136,9 +136,12 @@ namespace ORB_SLAM2
         void CreateInitialMapMonocular();
 
         void CheckReplacedInLastFrame();
+        void CheckReplacedInLastFrameWithCurves();
         bool TrackReferenceKeyFrame();
+        bool TrackReferenceKeyFrameWithCurves();
         void UpdateLastFrame();
         bool TrackWithMotionModel();
+        bool TrackWithMotionModelWithCurves();
 
         bool Relocalization();
 
@@ -177,6 +180,7 @@ namespace ORB_SLAM2
         KeyFrame *mpReferenceKF;
         std::vector<KeyFrame *> mvpLocalKeyFrames;
         std::vector<MapPoint *> mvpLocalMapPoints;
+        std::vector<MapCurve *> mvpLocalMapCurves;
 
         // System
         System *mpSystem;

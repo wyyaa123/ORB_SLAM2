@@ -239,7 +239,9 @@ namespace ORB_SLAM2
         return residuals;
     }
 
-    std::vector<BezierCurve> BezierCurveFitter::fitAdaptive(const std::vector<orderedEdgePoint> &edge) const
+    std::vector<BezierCurve> BezierCurveFitter::fitAdaptive(
+        const std::vector<orderedEdgePoint> &edge,
+        const std::size_t edgeChainId) const
     {
         std::vector<BezierCurve> fittedCurves;
         std::vector<std::vector<orderedEdgePoint>> pendingSegments;
@@ -308,6 +310,15 @@ namespace ORB_SLAM2
 
             pendingSegments.push_back(std::move(points2));
             pendingSegments.push_back(std::move(points1));
+        }
+
+        const std::size_t segmentCount = fittedCurves.size();
+        for (std::size_t segmentIndex = 0; segmentIndex < segmentCount; ++segmentIndex)
+        {
+            BezierCurve &curve = fittedCurves[segmentIndex];
+            curve.edgeChainId = edgeChainId;
+            curve.segmentIndex = segmentIndex;
+            curve.segmentCount = segmentCount;
         }
 
         return fittedCurves;

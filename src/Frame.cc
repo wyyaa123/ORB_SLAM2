@@ -43,11 +43,11 @@ namespace ORB_SLAM2
     Frame::Frame(const Frame &frame)
         : mpORBvocabulary(frame.mpORBvocabulary), mpORBextractorLeft(frame.mpORBextractorLeft), mpORBextractorRight(frame.mpORBextractorRight),
           mTimeStamp(frame.mTimeStamp), mK(frame.mK.clone()), mDistCoef(frame.mDistCoef.clone()),
-          mbf(frame.mbf), mb(frame.mb), mThDepth(frame.mThDepth), N(frame.N), mvKeys(frame.mvKeys),
-          mvKeysRight(frame.mvKeysRight), mvKeysUn(frame.mvKeysUn), mvuRight(frame.mvuRight),
+          mbf(frame.mbf), mb(frame.mb), mThDepth(frame.mThDepth), N(frame.N), NC(frame.NC), mvKeys(frame.mvKeys),
+          mvKeysRight(frame.mvKeysRight), mvKeysUn(frame.mvKeysUn), mvuRight(frame.mvuRight), mvBezierCurves(frame.mvBezierCurves),
           mvDepth(frame.mvDepth), mBowVec(frame.mBowVec), mFeatVec(frame.mFeatVec),
           mDescriptors(frame.mDescriptors.clone()), mDescriptorsRight(frame.mDescriptorsRight.clone()),
-          mvpMapPoints(frame.mvpMapPoints), mvbOutlier(frame.mvbOutlier), mnId(frame.mnId),
+          mvpMapPoints(frame.mvpMapPoints), mvpMapCurves(frame.mvpMapCurves), mvbOutlier(frame.mvbOutlier), mvbCurveOutlier(frame.mvbCurveOutlier), mnId(frame.mnId),
           mpReferenceKF(frame.mpReferenceKF), mnScaleLevels(frame.mnScaleLevels),
           mfScaleFactor(frame.mfScaleFactor), mfLogScaleFactor(frame.mfLogScaleFactor),
           mvScaleFactors(frame.mvScaleFactors), mvInvScaleFactors(frame.mvInvScaleFactors),
@@ -255,10 +255,10 @@ namespace ORB_SLAM2
 
     void Frame::ExtractCurve(const cv::Mat &mImGray, const cv::Mat &depth, const CurveConfigPtr &curveConfigPtr, const cv::Mat &Sem)
     {
-        EdgeExtracter edgeExtractor(20.0f, 50, 150);
+        EdgeExtracter edgeExtractor(20.0f, 100, 150);
         std::vector<Edge> vEdges = edgeExtractor(mImGray, Sem);
 
-        const BezierCurveFitter bezierFitter(2);
+        const BezierCurveFitter bezierFitter(curveConfigPtr->BezierFitter);
         tbb::concurrent_vector<BezierCurve> acceptedCurves;
 
         tbb::parallel_for(tbb::blocked_range<size_t>(0, vEdges.size()),
@@ -267,7 +267,7 @@ namespace ORB_SLAM2
                               for (size_t edgeIndex = range.begin(); edgeIndex != range.end(); ++edgeIndex)
                               {
                                   const Edge &edge = vEdges[edgeIndex];
-                                  std::vector<BezierCurve> bezierCurves = bezierFitter.fitAdaptive(edge);
+                                  std::vector<BezierCurve> bezierCurves = bezierFitter.fitAdaptive(edge, edgeIndex);
 
                                   for (BezierCurve &curve : bezierCurves)
                                   {
@@ -304,6 +304,13 @@ namespace ORB_SLAM2
         mvBezierCurves.insert(mvBezierCurves.end(),
                               std::make_move_iterator(acceptedCurves.begin()),
                               std::make_move_iterator(acceptedCurves.end()));
+                              
+        std::sort(mvBezierCurves.begin(), mvBezierCurves.end(), [](const BezierCurve &a, const BezierCurve &b)
+          {
+              if (a.edgeChainId != b.edgeChainId)
+                  return a.edgeChainId < b.edgeChainId;
+              return a.segmentIndex < b.segmentIndex;
+          });
 
         NC = mvBezierCurves.size();
         mvpMapCurves = vector<MapCurve *>(NC, static_cast<MapCurve *>(NULL));
@@ -836,10 +843,9 @@ namespace ORB_SLAM2
         const float oy = mOw.at<float>(1);
         const float oz = mOw.at<float>(2);
 
-        for (size_t pointIndex = 0;
-             pointIndex < curve.sampledPoints.size(); ++pointIndex)
+        for (size_t i = 0; i < curve.sampledPoints.size(); ++i)
         {
-            const orderedEdgePoint &pt = curve.sampledPoints[pointIndex];
+            const orderedEdgePoint &pt = curve.sampledPoints[i];
             if (pt.depth > 0)
             {
                 const float cameraX = static_cast<float>(pt.x_3d);

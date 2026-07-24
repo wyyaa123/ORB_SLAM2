@@ -19,6 +19,7 @@ namespace ORB_SLAM2
         float minDepth;
         float maxDepth;
         float validRatio;
+        int BezierFitter;
     };
 
 } // namespace ORB_SLAM2

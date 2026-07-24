@@ -22,10 +22,12 @@
 #define KEYFRAME_H
 
 #include "MapPoint.h"
+#include "Curve/MapCurve.h"
 #include "Thirdparty/DBoW2/DBoW2/BowVector.h"
 #include "Thirdparty/DBoW2/DBoW2/FeatureVector.h"
 #include "ORBVocabulary.h"
 #include "ORBextractor.h"
+#include "Curve/BezierCurve.h"
 #include "Frame.h"
 #include "KeyFrameDatabase.h"
 
@@ -36,6 +38,7 @@ namespace ORB_SLAM2
 
     class Map;
     class MapPoint;
+    class MapCurve;
     class Frame;
     class KeyFrameDatabase;
 
@@ -81,6 +84,7 @@ namespace ORB_SLAM2
 
         // MapPoint observation functions
         void AddMapPoint(MapPoint *pMP, const size_t &idx);
+        void AddMapCurve(MapCurve *pMC, const size_t &idx);
         void EraseMapPointMatch(const size_t &idx);
         void EraseMapPointMatch(MapPoint *pMP);
         void ReplaceMapPointMatch(const size_t &idx, MapPoint *pMP);
@@ -158,6 +162,8 @@ namespace ORB_SLAM2
         // Number of KeyPoints
         const int N;
 
+        const int NC;
+
         // KeyPoints, stereo coordinate and descriptors (all associated by an index)
         const std::vector<cv::KeyPoint> mvKeys;
         const std::vector<cv::KeyPoint> mvKeysUn;
@@ -165,6 +171,8 @@ namespace ORB_SLAM2
         const std::vector<float> mvDepth;  // negative value for monocular points
         const cv::Mat mDescriptors;
 
+        std::vector<BezierCurve> mvBezierCurves;
+        
         // BoW
         DBoW2::BowVector mBowVec;
         DBoW2::FeatureVector mFeatVec;
@@ -198,6 +206,7 @@ namespace ORB_SLAM2
 
         // MapPoints associated to keypoints
         std::vector<MapPoint *> mvpMapPoints;
+        std::vector<MapCurve *> mvpMapCurves;
 
         // BoW
         KeyFrameDatabase *mpKeyFrameDB;

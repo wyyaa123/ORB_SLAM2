@@ -22,6 +22,7 @@
 #define MAP_H
 
 #include "MapPoint.h"
+#include "Curve/MapCurve.h"
 #include "KeyFrame.h"
 #include <set>
 
@@ -31,6 +32,7 @@ namespace ORB_SLAM2
 {
 
     class MapPoint;
+    class MapCurve;
     class KeyFrame;
 
     class Map
@@ -40,24 +42,30 @@ namespace ORB_SLAM2
 
         void AddKeyFrame(KeyFrame *pKF);
         void AddMapPoint(MapPoint *pMP);
+        void AddMapCurve(MapCurve *pMC);
         void EraseMapPoint(MapPoint *pMP);
+        void EraseMapCurve(MapCurve *pMC);
         void EraseKeyFrame(KeyFrame *pKF);
         void SetReferenceMapPoints(const std::vector<MapPoint *> &vpMPs);
+        void SetReferenceMapCurves(const std::vector<MapCurve *> &vpMCs);
         void InformNewBigChange();
         int GetLastBigChangeIdx();
 
         std::vector<KeyFrame *> GetAllKeyFrames();
         std::vector<MapPoint *> GetAllMapPoints();
+        std::vector<MapCurve *> GetAllMapCurves();
         std::vector<MapPoint *> GetReferenceMapPoints();
+        std::vector<MapCurve *> GetReferenceMapCurves();
 
         long unsigned int MapPointsInMap();
-        long unsigned KeyFramesInMap();
+        long unsigned int MapCurvesInMap();
+        long unsigned int KeyFramesInMap();
 
         long unsigned int GetMaxKFid();
 
         void clear();
 
-        vector<KeyFrame *> mvpKeyFrameOrigins;
+        std::vector<KeyFrame *> mvpKeyFrameOrigins;
 
         std::mutex mMutexMapUpdate;
 
@@ -66,9 +74,11 @@ namespace ORB_SLAM2
 
     protected:
         std::set<MapPoint *> mspMapPoints;
+        std::set<MapCurve *> mspMapCurves;
         std::set<KeyFrame *> mspKeyFrames;
 
         std::vector<MapPoint *> mvpReferenceMapPoints;
+        std::vector<MapCurve *> mvpReferenceMapCurves;
 
         long unsigned int mnMaxKFid;
 
