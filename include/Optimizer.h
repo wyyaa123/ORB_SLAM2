@@ -23,6 +23,7 @@
 
 #include "Map.h"
 #include "MapPoint.h"
+#include "MapCurve.h"
 #include "KeyFrame.h"
 #include "LoopClosing.h"
 #include "Frame.h"
@@ -44,6 +45,7 @@ namespace ORB_SLAM2
                                            const unsigned long nLoopKF = 0, const bool bRobust = true);
         void static LocalBundleAdjustment(KeyFrame *pKF, bool *pbStopFlag, Map *pMap);
         int static PoseOptimization(Frame *pFrame);
+        int static PoseOptimizationWithCurves(Frame *pFrame);
 
         // if bFixScale is true, 6DoF optimization (stereo,rgbd), 7DoF otherwise (mono)
         void static OptimizeEssentialGraph(Map *pMap, KeyFrame *pLoopKF, KeyFrame *pCurKF,

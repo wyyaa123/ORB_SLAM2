@@ -81,6 +81,7 @@ src/Curve/EdgeCluster.cc
 src/Curve/EdgeExtracter.cc
 src/Curve/MapCurve.cc
 src/Curve/Hungarian.cpp
+src/Curve/CurveMatch.cc
 )
 
 target_link_libraries(${PROJECT_NAME}

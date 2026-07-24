@@ -24,6 +24,7 @@
 #include <opencv2/features2d/features2d.hpp>
 
 #include "ORBmatcher.h"
+#include "Curve/CurveMatcher.h"
 #include "FrameDrawer.h"
 #include "Converter.h"
 #include "Map.h"
@@ -526,6 +527,7 @@ namespace ORB_SLAM2
 
     void Tracking::TrackWithCurves()
     {
+        mvpCurveAssociationCandidates.clear();
         if (bStepByStep)
         {
             std::cout << "Tracking: Waiting to the next step" << std::endl;
@@ -575,7 +577,7 @@ namespace ORB_SLAM2
                     }
                     else
                     {
-                        bOK = TrackWithMotionModel();
+                        bOK = TrackWithMotionModelWithCurves();
                         if (!bOK)
                             bOK = TrackReferenceKeyFrameWithCurves();
                     }
@@ -593,6 +595,12 @@ namespace ORB_SLAM2
             {
                 if (bOK)
                     bOK = TrackLocalMap();
+            }
+
+            if (bOK)
+            {
+                UpdateMatchedMapCurves();
+                mvpCurveAssociationCandidates = mLastFrame.mvpMapCurves;
             }
 
             if (bOK)
@@ -631,6 +639,17 @@ namespace ORB_SLAM2
                         }
                 }
 
+                for (int i = 0; i < mCurrentFrame.NC; i++)
+                {
+                    MapCurve *pMC = mCurrentFrame.mvpMapCurves[i];
+                    if (pMC)
+                        if (pMC->Observations() < 1)
+                        {
+                            mCurrentFrame.mvbCurveOutlier[i] = false;
+                            mCurrentFrame.mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
+                        }
+                }
+
                 // Delete temporal MapPoints
                 for (list<MapPoint *>::iterator lit = mlpTemporalPoints.begin(), lend = mlpTemporalPoints.end(); lit != lend; lit++)
                 {
@@ -641,7 +660,7 @@ namespace ORB_SLAM2
 
                 // Check if we need to insert a new keyframe
                 if (NeedNewKeyFrame())
-                    CreateNewKeyFrame();
+                    CreateNewKeyFrameWithCurves();
 
                 // We allow points with high innovation (considererd outliers by the Huber Function)
                 // pass to the new keyframe, so that bundle adjustment will finally decide
@@ -651,6 +670,12 @@ namespace ORB_SLAM2
                 {
                     if (mCurrentFrame.mvpMapPoints[i] && mCurrentFrame.mvbOutlier[i])
                         mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                }
+
+                for (int i = 0; i < mCurrentFrame.NC; i++)
+                {
+                    if (mCurrentFrame.mvpMapCurves[i] && mCurrentFrame.mvbCurveOutlier[i])
+                        mCurrentFrame.mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
                 }
             }
 
@@ -1088,7 +1113,10 @@ namespace ORB_SLAM2
         ORBmatcher matcher(0.7, true);
         vector<MapPoint *> vpMapPointMatches;
 
+        CurveMatcher curveMatcher(mCurveConfig);
+
         int nmatches = matcher.SearchByBoW(mpReferenceKF, mCurrentFrame, vpMapPointMatches);
+        curveMatcher.AssociateMapCurvesToFrame(mpReferenceKF->GetMapCurveMatches(), mCurrentFrame);
 
         if (nmatches < 15)
             return false;
@@ -1114,6 +1142,25 @@ namespace ORB_SLAM2
                     nmatches--;
                 }
                 else if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                    nmatchesMap++;
+            }
+        }
+
+        for (int i = 0; i < mCurrentFrame.NC; i++)
+        {
+            if (mCurrentFrame.mvpMapCurves[i])
+            {
+                if (mCurrentFrame.mvbCurveOutlier[i])
+                {
+                    MapCurve *pMC = mCurrentFrame.mvpMapCurves[i];
+
+                    mCurrentFrame.mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
+                    mCurrentFrame.mvbCurveOutlier[i] = false;
+                    pMC->mbTrackInView = false;
+                    pMC->mnLastFrameSeen = mCurrentFrame.mnId;
+                    nmatches--;
+                }
+                else if (mCurrentFrame.mvpMapCurves[i]->Observations() > 0)
                     nmatchesMap++;
             }
         }
@@ -1187,6 +1234,14 @@ namespace ORB_SLAM2
         }
     }
 
+    void Tracking::UpdateLastFrameWithCurves()
+    {
+        KeyFrame *pRef = mLastFrame.mpReferenceKF;
+        cv::Mat Tlr = mlRelativeFramePoses.back();
+
+        mLastFrame.SetPose(Tlr * pRef->GetPose());
+    }
+
     bool Tracking::TrackWithMotionModel()
     {
         ORBmatcher matcher(0.9, true);
@@ -1256,7 +1311,7 @@ namespace ORB_SLAM2
 
         // Update last frame pose according to its reference keyframe
         // Create "visual odometry" points if in Localization Mode
-        UpdateLastFrame();
+        UpdateLastFrameWithCurves();
 
         mCurrentFrame.SetPose(mVelocity * mLastFrame.mTcw);
 
@@ -1279,6 +1334,9 @@ namespace ORB_SLAM2
 
         if (nmatches < 20)
             return false;
+
+        CurveMatcher curveMatcher(mCurveConfig);
+        curveMatcher.AssociateMapCurvesToFrame(mLastFrame.mvpMapCurves, mCurrentFrame);
 
         // Optimize frame pose with all matches
         Optimizer::PoseOptimization(&mCurrentFrame);
@@ -1304,13 +1362,39 @@ namespace ORB_SLAM2
             }
         }
 
-        if (mbOnlyTracking)
+        for (int i = 0; i < mCurrentFrame.NC; i++)
         {
-            mbVO = nmatchesMap < 10;
-            return nmatches > 20;
+            if (mCurrentFrame.mvpMapCurves[i])
+            {
+                if (mCurrentFrame.mvbCurveOutlier[i])
+                {
+                    MapCurve *pMC = mCurrentFrame.mvpMapCurves[i];
+
+                    mCurrentFrame.mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
+                    mCurrentFrame.mvbCurveOutlier[i] = false;
+                    pMC->mbTrackInView = false;
+                    pMC->mnLastFrameSeen = mCurrentFrame.mnId;
+                    nmatches--;
+                }
+                else if (mCurrentFrame.mvpMapCurves[i]->Observations() > 0)
+                    nmatchesMap++;
+            }
         }
 
         return nmatchesMap >= 10;
+    }
+
+    void Tracking::UpdateMatchedMapCurves()
+    {
+        const size_t curveCount = mCurrentFrame.mvBezierCurves.size();
+        for (size_t curveIndex = 0; curveIndex < curveCount; ++curveIndex)
+        {
+            MapCurve *pMapCurve = mCurrentFrame.mvpMapCurves[curveIndex];
+            if (!pMapCurve || (curveIndex < mCurrentFrame.mvbCurveOutlier.size() && mCurrentFrame.mvbCurveOutlier[curveIndex]))
+                continue;
+            const std::vector<cv::Point3d> unprojectedPoints = mCurrentFrame.UnprojectCurve(static_cast<int>(curveIndex));
+            pMapCurve->ExtendWithObservation(unprojectedPoints, mCurveConfig->mapFusionDistance, static_cast<size_t>(mCurveConfig->minFusionOverlap));
+        }
     }
 
     bool Tracking::TrackLocalMap()
@@ -1512,6 +1596,116 @@ namespace ORB_SLAM2
 
                     if (vDepthIdx[j].first > mThDepth && nPoints > 100)
                         break;
+                }
+            }
+        }
+
+        mpLocalMapper->InsertKeyFrame(pKF);
+
+        mpLocalMapper->SetNotStop(false);
+
+        mnLastKeyFrameId = mCurrentFrame.mnId;
+        mpLastKeyFrame = pKF;
+    }
+
+    void Tracking::CreateNewKeyFrameWithCurves()
+    {
+        if (!mpLocalMapper->SetNotStop(true))
+            return;
+
+        KeyFrame *pKF = new KeyFrame(mCurrentFrame, mpMap, mpKeyFrameDB);
+
+        mpReferenceKF = pKF;
+        mCurrentFrame.mpReferenceKF = pKF;
+
+        if (mSensor != System::MONOCULAR)
+        {
+            mCurrentFrame.UpdatePoseMatrices();
+
+            // We sort points by the measured depth by the stereo/RGBD sensor.
+            // We create all those MapPoints whose depth < mThDepth.
+            // If there are less than 100 close points we create the 100 closest.
+            vector<pair<float, int>> vDepthIdx;
+            vDepthIdx.reserve(mCurrentFrame.N);
+            for (int i = 0; i < mCurrentFrame.N; i++)
+            {
+                float z = mCurrentFrame.mvDepth[i];
+                if (z > 0)
+                {
+                    vDepthIdx.push_back(make_pair(z, i));
+                }
+            }
+
+            if (!vDepthIdx.empty())
+            {
+                sort(vDepthIdx.begin(), vDepthIdx.end());
+
+                int nPoints = 0;
+                for (size_t j = 0; j < vDepthIdx.size(); j++)
+                {
+                    int i = vDepthIdx[j].second;
+
+                    bool bCreateNew = false;
+
+                    MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+                    if (!pMP)
+                        bCreateNew = true;
+                    else if (pMP->Observations() < 1)
+                    {
+                        bCreateNew = true;
+                        mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+                    }
+
+                    if (bCreateNew)
+                    {
+                        cv::Mat x3D = mCurrentFrame.UnprojectStereo(i);
+                        MapPoint *pNewMP = new MapPoint(x3D, pKF, mpMap);
+                        pNewMP->AddObservation(pKF, i);
+                        pKF->AddMapPoint(pNewMP, i);
+                        pNewMP->ComputeDistinctiveDescriptors();
+                        pNewMP->UpdateNormalAndDepth();
+                        mpMap->AddMapPoint(pNewMP);
+
+                        mCurrentFrame.mvpMapPoints[i] = pNewMP;
+                        nPoints++;
+                    }
+                    else
+                    {
+                        nPoints++;
+                    }
+
+                    if (vDepthIdx[j].first > mThDepth && nPoints > 100)
+                        break;
+                }
+            }
+
+            for (int i = 0; i < mCurrentFrame.NC; ++i)
+            {
+                bool bCreateNew = false;
+
+                MapCurve *pMC = mCurrentFrame.mvpMapCurves[i];
+                if (!pMC)
+                    bCreateNew = true;
+                else if (pMC->Observations() < 1)
+                {
+                    bCreateNew = true;
+                    mCurrentFrame.mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
+                }
+
+                if (bCreateNew)
+                {
+                    std::vector<cv::Point3d> unprojectedPoints = mCurrentFrame.UnprojectCurve(i);
+                    pMC = new MapCurve(std::move(unprojectedPoints), pKF, mpMap);
+                    pMC->AddObservation(pKF, i);
+                    pKF->AddMapCurve(pMC, i);
+                    mpMap->AddMapCurve(pMC);
+
+                    mCurrentFrame.mvpMapCurves[i] = pMC;
+                }
+                else
+                {
+                    pMC->AddObservation(pKF, i);
+                    pKF->AddMapCurve(pMC, i);
                 }
             }
         }

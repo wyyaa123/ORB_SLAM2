@@ -165,14 +165,13 @@ namespace ORB_SLAM2
             cv::Mat im = mpFrameDrawer->DrawFrame();
             cv::imshow("ORB-SLAM2: Current Frame", im);
 
-            static int frameCount = 0;
-
             if (mCurveConfig->enabled)
             {
                 cv::Mat imCurves = mpFrameDrawer->DrawFrameCurves();
                 cv::imshow("ORB-SLAM2: Current Curves", imCurves);
-                cv::imwrite(to_string(frameCount) + ".png", imCurves);
-                frameCount++;
+                cv::Mat imCurveAssociations = mpFrameDrawer->DrawCurveAssociations();
+                if (!imCurveAssociations.empty())
+                    cv::imshow("ORB-SLAM2: Curve Associations", imCurveAssociations);
             }
 
             cv::waitKey(mT);

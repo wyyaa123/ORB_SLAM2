@@ -216,6 +216,12 @@ namespace ORB_SLAM2
         mvpMapCurves[idx] = pMC;
     }
 
+    std::vector<MapCurve *> KeyFrame::GetMapCurveMatches()
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        return mvpMapCurves;
+    }
+
     void KeyFrame::EraseMapPointMatch(const size_t &idx)
     {
         unique_lock<mutex> lock(mMutexFeatures);

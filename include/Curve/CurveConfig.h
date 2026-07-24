@@ -20,6 +20,14 @@ namespace ORB_SLAM2
         float maxDepth;
         float validRatio;
         int BezierFitter;
+
+        // Curve association parameters.
+        float matchSearchRadius;
+        int minCandidateHits;
+        float minCandidateCoverage;
+        float unmatchedCost;
+        float mapFusionDistance;
+        int minFusionOverlap;
     };
 
 } // namespace ORB_SLAM2

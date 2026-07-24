@@ -23,8 +23,13 @@
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <mutex>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace ORB_SLAM2
 {
@@ -171,6 +176,162 @@ namespace ORB_SLAM2
         return im;
     }
 
+    cv::Scalar FrameDrawer::AssociationColor(const size_t colorIndex)
+    {
+        cv::Mat hsv(1, 1, CV_8UC3, cv::Scalar(static_cast<int>((colorIndex * 37) % 180), 230, 255));
+        cv::Mat bgr;
+        cv::cvtColor(hsv, bgr, cv::COLOR_HSV2BGR);
+        const cv::Vec3b color = bgr.at<cv::Vec3b>(0, 0);
+        return cv::Scalar(color[0], color[1], color[2]);
+    }
+
+    void FrameDrawer::DrawSampledCurve(cv::Mat &image, const std::vector<cv::Point2f> &samples, const cv::Scalar &color, const int thickness)
+    {
+        if (samples.empty())
+            return;
+        if (samples.size() == 1)
+        {
+            cv::circle(image, cv::Point(cvRound(samples[0].x), cvRound(samples[0].y)), std::max(1, thickness), color, -1, cv::LINE_AA);
+            return;
+        }
+        for (size_t sampleIndex = 1; sampleIndex < samples.size(); ++sampleIndex)
+        {
+            const cv::Point first(cvRound(samples[sampleIndex - 1].x), cvRound(samples[sampleIndex - 1].y));
+            const cv::Point second(cvRound(samples[sampleIndex].x), cvRound(samples[sampleIndex].y));
+            cv::line(image, first, second, color, thickness, cv::LINE_AA);
+        }
+    }
+
+    bool FrameDrawer::ProjectWorldPoint(const cv::Point3d &worldPoint, const cv::Mat &Tcw, cv::Point2f &imagePoint)
+    {
+        if (Tcw.empty())
+            return false;
+        const float worldX = static_cast<float>(worldPoint.x);
+        const float worldY = static_cast<float>(worldPoint.y);
+        const float worldZ = static_cast<float>(worldPoint.z);
+        const float cameraX = Tcw.at<float>(0, 0) * worldX + Tcw.at<float>(0, 1) * worldY + Tcw.at<float>(0, 2) * worldZ + Tcw.at<float>(0, 3);
+        const float cameraY = Tcw.at<float>(1, 0) * worldX + Tcw.at<float>(1, 1) * worldY + Tcw.at<float>(1, 2) * worldZ + Tcw.at<float>(1, 3);
+        const float cameraZ = Tcw.at<float>(2, 0) * worldX + Tcw.at<float>(2, 1) * worldY + Tcw.at<float>(2, 2) * worldZ + Tcw.at<float>(2, 3);
+        if (!std::isfinite(cameraX) || !std::isfinite(cameraY) || !std::isfinite(cameraZ) || cameraZ <= 0.0f)
+            return false;
+        imagePoint.x = Frame::fx * cameraX / cameraZ + Frame::cx;
+        imagePoint.y = Frame::fy * cameraY / cameraZ + Frame::cy;
+        return std::isfinite(imagePoint.x) && std::isfinite(imagePoint.y);
+    }
+
+    void FrameDrawer::AppendResampledSegment(const cv::Point2f &first, const cv::Point2f &second, std::vector<cv::Point2f> &samples)
+    {
+        const float length = cv::norm(second - first);
+        if (length <= 1e-3f)
+            return;
+        const int intervalCount = std::max(1, static_cast<int>(std::ceil(length / 3.0f)));
+        for (int interval = 1; interval <= intervalCount; ++interval)
+        {
+            const float ratio = static_cast<float>(interval) / intervalCount;
+            samples.push_back(first + ratio * (second - first));
+        }
+    }
+
+    bool FrameDrawer::ProjectMapCurve(MapCurve *pMapCurve, const cv::Mat &Tcw, const float margin, std::vector<cv::Point2f> &projectedSamples)
+    {
+        projectedSamples.clear();
+        if (!pMapCurve || pMapCurve->isBad() || Tcw.empty())
+            return false;
+        const std::vector<cv::Point3d> worldPoints = pMapCurve->GetCurvePoints();
+        bool hasPreviousPoint = false;
+        cv::Point2f previousPoint;
+        for (const cv::Point3d &worldPoint : worldPoints)
+        {
+            cv::Point2f currentPoint;
+            if (!ProjectWorldPoint(worldPoint, Tcw, currentPoint) || currentPoint.x < Frame::mnMinX - margin || currentPoint.x > Frame::mnMaxX + margin || currentPoint.y < Frame::mnMinY - margin || currentPoint.y > Frame::mnMaxY + margin)
+            {
+                hasPreviousPoint = false;
+                continue;
+            }
+            if (!hasPreviousPoint)
+                projectedSamples.push_back(currentPoint);
+            else
+                AppendResampledSegment(previousPoint, currentPoint, projectedSamples);
+            previousPoint = currentPoint;
+            hasPreviousPoint = true;
+        }
+        return projectedSamples.size() >= 2;
+    }
+
+    cv::Mat FrameDrawer::DrawCurveAssociations()
+    {
+        cv::Mat image;
+        cv::Mat Tcw;
+        std::vector<BezierCurve> observedCurves;
+        std::vector<MapCurve *> mapCurveMatches;
+        std::vector<MapCurve *> mapCurveCandidates;
+        {
+            std::unique_lock<std::mutex> lock(mMutex);
+            image = mIm.clone();
+            Tcw = mCurveAssociationTcw.clone();
+            observedCurves = mvCurveAssociationCurves;
+            mapCurveMatches = mvpCurveAssociationMatches;
+            mapCurveCandidates = mvpCurveAssociationCandidates;
+        }
+        if (image.empty() || Tcw.empty() || mapCurveCandidates.empty())
+            return cv::Mat();
+
+        cv::Mat colorImage;
+        if (image.channels() == 1)
+            cv::cvtColor(image, colorImage, cv::COLOR_GRAY2BGR);
+        else if (image.channels() == 3)
+            colorImage = image.clone();
+        else if (image.channels() == 4)
+            cv::cvtColor(image, colorImage, cv::COLOR_BGRA2BGR);
+        else
+            return cv::Mat();
+        colorImage.convertTo(colorImage, CV_8UC3, 0.65);
+
+        cv::Mat projectedImage = colorImage.clone();
+        cv::Mat observedImage = colorImage.clone();
+        std::unordered_map<MapCurve *, cv::Scalar> associatedColors;
+        const size_t associationCount = std::min(observedCurves.size(), mapCurveMatches.size());
+        for (size_t curveIndex = 0; curveIndex < associationCount; ++curveIndex)
+        {
+            MapCurve *pMapCurve = mapCurveMatches[curveIndex];
+            if (pMapCurve && associatedColors.count(pMapCurve) == 0)
+            {
+                const cv::Scalar color = AssociationColor(pMapCurve->mnId);
+                associatedColors[pMapCurve] = color;
+            }
+        }
+
+        std::unordered_set<MapCurve *> drawnMapCurves;
+        for (MapCurve *pMapCurve : mapCurveCandidates)
+        {
+            if (!pMapCurve || !drawnMapCurves.insert(pMapCurve).second)
+                continue;
+            std::vector<cv::Point2f> projectedSamples;
+            if (!ProjectMapCurve(pMapCurve, Tcw, 0.0f, projectedSamples))
+                continue;
+            const auto color = associatedColors.find(pMapCurve);
+            DrawSampledCurve(projectedImage, projectedSamples, color == associatedColors.end() ? cv::Scalar(110, 110, 110) : color->second, 2);
+        }
+
+        for (size_t curveIndex = 0; curveIndex < observedCurves.size(); ++curveIndex)
+        {
+            std::vector<cv::Point2f> observedSamples;
+            observedSamples.reserve(observedCurves[curveIndex].sampledPoints.size());
+            for (const orderedEdgePoint &sample : observedCurves[curveIndex].sampledPoints)
+                observedSamples.push_back(cv::Point2f(static_cast<float>(sample.x), static_cast<float>(sample.y)));
+            MapCurve *pMapCurve = curveIndex < mapCurveMatches.size() ? mapCurveMatches[curveIndex] : NULL;
+            const auto color = associatedColors.find(pMapCurve);
+            DrawSampledCurve(observedImage, observedSamples, color == associatedColors.end() ? cv::Scalar(110, 110, 110) : color->second, 2);
+        }
+
+        cv::putText(projectedImage, "Projected map curves", cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        cv::putText(observedImage, "Current Bezier curves", cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        cv::Mat associationImage;
+        cv::hconcat(projectedImage, observedImage, associationImage);
+        cv::line(associationImage, cv::Point(projectedImage.cols, 0), cv::Point(projectedImage.cols, associationImage.rows - 1), cv::Scalar(255, 255, 255), 1);
+        return associationImage;
+    }
+
     void FrameDrawer::DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText)
     {
         stringstream s;
@@ -212,6 +373,10 @@ namespace ORB_SLAM2
     {
         unique_lock<mutex> lock(mMutex);
         pTracker->mImGray.copyTo(mIm);
+        mCurveAssociationTcw = pTracker->mCurrentFrame.mTcw.clone();
+        mvCurveAssociationCurves = pTracker->mCurrentFrame.mvBezierCurves;
+        mvpCurveAssociationMatches = pTracker->mCurrentFrame.mvpMapCurves;
+        mvpCurveAssociationCandidates = pTracker->mvpCurveAssociationCandidates;
         mvCurrentKeys = pTracker->mCurrentFrame.mvKeys;
         mpCurrentCurves = pTracker->mCurrentFrame.mvBezierCurves;
         N = mvCurrentKeys.size();

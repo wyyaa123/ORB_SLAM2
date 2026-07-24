@@ -2,6 +2,7 @@
 
 #include <opencv2/core/core.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
@@ -31,6 +32,12 @@ namespace ORB_SLAM2
         maxDepth = ReadFloat(settings, "Curve.MaxDepth", 4.0f);
         validRatio = ReadFloat(settings, "Curve.ValidRatio", 0.3f);
         BezierFitter = ReadInt(settings, "Curve.BezierFitter", 2);
+        matchSearchRadius = ReadFloat(settings, "Curve.MatchSearchRadius", 6.0f);
+        minCandidateHits = ReadInt(settings, "Curve.MinCandidateHits", 3);
+        minCandidateCoverage = ReadFloat(settings, "Curve.MinCandidateCoverage", 0.2f);
+        unmatchedCost = ReadFloat(settings, "Curve.UnmatchedCost", 6.0f);
+        mapFusionDistance = std::max(0.001f, ReadFloat(settings, "Curve.MapFusionDistance", 0.08f));
+        minFusionOverlap = std::max(2, ReadInt(settings, "Curve.MinFusionOverlap", 3));
     }
 
 } // namespace ORB_SLAM2

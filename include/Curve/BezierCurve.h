@@ -40,12 +40,8 @@ namespace ORB_SLAM2
 
     private:
         std::vector<double> chordLengthParameters(const std::vector<orderedEdgePoint> &points) const;
-        std::vector<double> computeResiduals(const std::vector<orderedEdgePoint> &controlPoints,
-                                             const std::vector<orderedEdgePoint> &edge,
-                                             const std::vector<double> &parameters) const;
-        BezierCurve fitWithEndPoints(const std::vector<orderedEdgePoint> &edge,
-                                     const std::vector<double> &parameters,
-                                     int order) const;
+        std::vector<double> computeResiduals(const std::vector<orderedEdgePoint> &controlPoints, const std::vector<orderedEdgePoint> &edge, const std::vector<double> &parameters) const;
+        BezierCurve fitWithEndPoints(const std::vector<orderedEdgePoint> &edge, const std::vector<double> &parameters, int order) const;
 
         double rho_p_;
         std::size_t minSplitPoints_;

@@ -50,12 +50,22 @@ namespace ORB_SLAM2
 
         // Draw the current curves in the frame.
         cv::Mat DrawFrameCurves();
+        cv::Mat DrawCurveAssociations();
 
     protected:
         void DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText);
+        cv::Scalar AssociationColor(std::size_t colorIndex);
+        void DrawSampledCurve(cv::Mat &image, const std::vector<cv::Point2f> &samples, const cv::Scalar &color, int thickness);
+        bool ProjectWorldPoint(const cv::Point3d &worldPoint, const cv::Mat &Tcw, cv::Point2f &imagePoint);
+        void AppendResampledSegment(const cv::Point2f &first, const cv::Point2f &second, std::vector<cv::Point2f> &samples);
+        bool ProjectMapCurve(MapCurve *pMapCurve, const cv::Mat &Tcw, float margin, std::vector<cv::Point2f> &projectedSamples);
 
         // Info of the frame to be drawn
         cv::Mat mIm;
+        cv::Mat mCurveAssociationTcw;
+        vector<BezierCurve> mvCurveAssociationCurves;
+        vector<MapCurve *> mvpCurveAssociationMatches;
+        vector<MapCurve *> mvpCurveAssociationCandidates;
         int N;
         vector<cv::KeyPoint> mvCurrentKeys;
         vector<BezierCurve> mpCurrentCurves;

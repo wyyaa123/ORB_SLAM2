@@ -21,9 +21,16 @@ namespace ORB_SLAM2
     public:
         MapCurve(std::vector<cv::Point3d> curvePoints, KeyFrame *pReferenceKF, Map *pMap);
 
+        std::vector<cv::Point3d> GetCurvePoints();
+        size_t ExtendWithObservation(const std::vector<cv::Point3d> &observedPoints, double maximumAssociationDistance, size_t minimumOverlapPoints);
+
+        int Observations();
+
         void AddObservation(KeyFrame *pKF, size_t idx);
 
         MapCurve *GetReplaced();
+
+        bool isBad();
 
     public:
         long unsigned int mnId;
@@ -31,6 +38,9 @@ namespace ORB_SLAM2
         long int mnFirstKFid;
         long int mnFirstFrame;
         int nObs;
+
+        bool mbTrackInView;
+        long unsigned int mnLastFrameSeen;
 
         static std::mutex mGlobalMutex;
 

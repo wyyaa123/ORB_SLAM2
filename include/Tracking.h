@@ -95,6 +95,7 @@ namespace ORB_SLAM2
         // Current Frame
         Frame mCurrentFrame;
         cv::Mat mImGray;
+        std::vector<MapCurve *> mvpCurveAssociationCandidates;
 
         // Initialization Variables (Monocular)
         std::vector<int> mvIniLastMatches;
@@ -140,8 +141,10 @@ namespace ORB_SLAM2
         bool TrackReferenceKeyFrame();
         bool TrackReferenceKeyFrameWithCurves();
         void UpdateLastFrame();
+        void UpdateLastFrameWithCurves();
         bool TrackWithMotionModel();
         bool TrackWithMotionModelWithCurves();
+        void UpdateMatchedMapCurves();
 
         bool Relocalization();
 
@@ -153,7 +156,9 @@ namespace ORB_SLAM2
         void SearchLocalPoints();
 
         bool NeedNewKeyFrame();
+        bool NeedNewKeyFrameWithCurves();
         void CreateNewKeyFrame();
+        void CreateNewKeyFrameWithCurves();
 
         // In case of performing only localization, this flag is true when there are no matches to
         // points in the map. Still tracking will continue if there are enough matches with temporal points.
