@@ -26,8 +26,6 @@ namespace ORB_SLAM2
         int minCandidateHits;
         float minCandidateCoverage;
         float unmatchedCost;
-        float mapFusionDistance;
-        int minFusionOverlap;
     };
 
 } // namespace ORB_SLAM2

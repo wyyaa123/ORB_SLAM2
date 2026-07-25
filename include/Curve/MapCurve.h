@@ -22,7 +22,7 @@ namespace ORB_SLAM2
         MapCurve(std::vector<cv::Point3d> curvePoints, KeyFrame *pReferenceKF, Map *pMap);
 
         std::vector<cv::Point3d> GetCurvePoints();
-        size_t ExtendWithObservation(const std::vector<cv::Point3d> &observedPoints, double maximumAssociationDistance, size_t minimumOverlapPoints);
+        size_t ExtendWithObservation(const Frame &frame, size_t observedCurveIndex);
 
         int Observations();
 
@@ -61,6 +61,10 @@ namespace ORB_SLAM2
 
         std::mutex mMutexPos;
         std::mutex mMutexFeatures;
+
+    private:
+        static bool ProjectWorldPoint(const cv::Point3d &worldPoint, const Frame &frame, cv::Point2d &imagePoint);
+        static size_t FindNearestPointIndex(const cv::Point2d &queryPoint, const std::vector<cv::Point2d> &points);
     };
 }
 

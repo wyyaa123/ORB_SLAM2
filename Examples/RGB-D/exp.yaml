@@ -76,11 +76,7 @@ Curve.BezierFitter: 1
 Curve.MinDepth: 0.02
 Curve.MaxDepth: 4.0
 Curve.ValidRatio: 0.5
-Curve.MatchSearchRadius: 6.0
+Curve.MatchSearchRadius: 10
 Curve.MinCandidateHits: 3
 Curve.MinCandidateCoverage: 0.2
 Curve.UnmatchedCost: 6.0
-
-# 用于调整曲线延伸的参数
-Curve.MapFusionDistance: 0.08
-Curve.MinFusionOverlap: 3

@@ -27,11 +27,15 @@
 #include "Thirdparty/g2o/g2o/core/robust_kernel_impl.h"
 #include "Thirdparty/g2o/g2o/solvers/linear_solver_dense.h"
 #include "Thirdparty/g2o/g2o/types/types_seven_dof_expmap.h"
+#include "Curve/CurveProjectionEdge.h"
 
 #include <Eigen/StdVector>
 
 #include "Converter.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
 #include <mutex>
 
 namespace ORB_SLAM2
@@ -233,8 +237,11 @@ namespace ORB_SLAM2
         }
     }
 
-    int Optimizer::PoseOptimization(Frame *pFrame)
+    int Optimizer::PoseOptimizationWithCurves(Frame *pFrame)
     {
+        if (pFrame->mvCurveSampleCorrespondences.empty())
+            return PoseOptimization(pFrame);
+
         g2o::SparseOptimizer optimizer;
         g2o::BlockSolver_6_3::LinearSolverType *linearSolver;
 
@@ -267,8 +274,16 @@ namespace ORB_SLAM2
         vpEdgesStereo.reserve(N);
         vnIndexEdgeStereo.reserve(N);
 
+        vector<EdgeSE3ProjectCurveOnlyPose *> vpEdgesCurve;
+        vector<size_t> vnIndexEdgeCurve;
+        vpEdgesCurve.reserve(pFrame->mvCurveSampleCorrespondences.size());
+        vnIndexEdgeCurve.reserve(pFrame->mvCurveSampleCorrespondences.size());
+
         const float deltaMono = sqrt(5.991);
         const float deltaStereo = sqrt(7.815);
+        const double curveSigma = 2.0;
+        const double curveWeight = 20.0;
+        const double curveRobustPixelDelta = 6.0;
 
         {
             unique_lock<mutex> lock(MapPoint::mGlobalMutex);
@@ -355,6 +370,49 @@ namespace ORB_SLAM2
             }
         }
 
+        if (pFrame->mvbCurveOutlier.size() != pFrame->mvBezierCurves.size())
+            pFrame->mvbCurveOutlier.assign(pFrame->mvBezierCurves.size(), false);
+        else
+            std::fill(pFrame->mvbCurveOutlier.begin(), pFrame->mvbCurveOutlier.end(), false);
+
+        for (const CurveSampleCorrespondence &correspondence : pFrame->mvCurveSampleCorrespondences)
+        {
+            if (!correspondence.pMapCurve || correspondence.observedCurveIndex >= pFrame->mvpMapCurves.size() || pFrame->mvpMapCurves[correspondence.observedCurveIndex] != correspondence.pMapCurve || correspondence.normalizedWeight <= 0.0)
+                continue;
+            if (!std::isfinite(correspondence.worldPoint.x) || !std::isfinite(correspondence.worldPoint.y) || !std::isfinite(correspondence.worldPoint.z) || !std::isfinite(correspondence.observedPoint.x) || !std::isfinite(correspondence.observedPoint.y) || !std::isfinite(correspondence.observedNormal.x) || !std::isfinite(correspondence.observedNormal.y))
+                continue;
+
+            const double normalLength = cv::norm(correspondence.observedNormal);
+            if (normalLength <= 1e-9)
+                continue;
+
+            EdgeSE3ProjectCurveOnlyPose *edge = new EdgeSE3ProjectCurveOnlyPose();
+            edge->setVertex(0, dynamic_cast<g2o::OptimizableGraph::Vertex *>(optimizer.vertex(0)));
+            edge->setMeasurement(0.0);
+            const double information = curveWeight * correspondence.normalizedWeight / (curveSigma * curveSigma);
+            Eigen::Matrix<double, 1, 1> informationMatrix;
+            informationMatrix(0, 0) = information;
+            edge->setInformation(informationMatrix);
+
+            g2o::RobustKernelCauchy *robustKernel = new g2o::RobustKernelCauchy;
+            robustKernel->setDelta(curveRobustPixelDelta * std::sqrt(information));
+            edge->setRobustKernel(robustKernel);
+
+            edge->fx = pFrame->fx;
+            edge->fy = pFrame->fy;
+            edge->cx = pFrame->cx;
+            edge->cy = pFrame->cy;
+            edge->Xw = Eigen::Vector3d(correspondence.worldPoint.x, correspondence.worldPoint.y, correspondence.worldPoint.z);
+            edge->observedPoint = Eigen::Vector2d(correspondence.observedPoint.x, correspondence.observedPoint.y);
+            edge->observedNormal = Eigen::Vector2d(correspondence.observedNormal.x / normalLength, correspondence.observedNormal.y / normalLength);
+            optimizer.addEdge(edge);
+            vpEdgesCurve.push_back(edge);
+            vnIndexEdgeCurve.push_back(correspondence.observedCurveIndex);
+        }
+
+        if (vpEdgesCurve.empty())
+            return PoseOptimization(pFrame);
+
         if (nInitialCorrespondences < 3)
             return 0;
 
@@ -362,13 +420,13 @@ namespace ORB_SLAM2
         // At the next optimization, outliers are not included, but at the end they can be classified as inliers again.
         const float chi2Mono[4] = {5.991, 5.991, 5.991, 5.991};
         const float chi2Stereo[4] = {7.815, 7.815, 7.815, 7.815};
+        const double curvePixelThreshold[4] = {6.0, 5.0, 4.0, 3.0};
         const int its[4] = {10, 10, 10, 10};
 
         int nBad = 0;
         for (size_t it = 0; it < 4; it++)
         {
 
-            vSE3->setEstimate(Converter::toSE3Quat(pFrame->mTcw));
             optimizer.initializeOptimization(0);
             optimizer.optimize(its[it]);
 
@@ -431,6 +489,16 @@ namespace ORB_SLAM2
                     e->setRobustKernel(0);
             }
 
+            for (size_t i = 0; i < vpEdgesCurve.size(); ++i)
+            {
+                EdgeSE3ProjectCurveOnlyPose *edge = vpEdgesCurve[i];
+                edge->computeError();
+                if (!edge->isDepthPositive() || std::abs(edge->error()[0]) > curvePixelThreshold[it])
+                    edge->setLevel(1);
+                else
+                    edge->setLevel(0);
+            }
+
             if (optimizer.edges().size() < 10)
                 break;
         }
@@ -441,10 +509,53 @@ namespace ORB_SLAM2
         cv::Mat pose = Converter::toCvMat(SE3quat_recov);
         pFrame->SetPose(pose);
 
-        return nInitialCorrespondences - nBad;
+        vector<int> curveSampleCount(pFrame->mvBezierCurves.size(), 0);
+        vector<int> curveInlierCount(pFrame->mvBezierCurves.size(), 0);
+        vector<vector<double>> curveInlierErrors(pFrame->mvBezierCurves.size());
+        for (size_t edgeIndex = 0; edgeIndex < vpEdgesCurve.size(); ++edgeIndex)
+        {
+            EdgeSE3ProjectCurveOnlyPose *edge = vpEdgesCurve[edgeIndex];
+            const size_t curveIndex = vnIndexEdgeCurve[edgeIndex];
+            if (curveIndex >= curveSampleCount.size())
+                continue;
+            edge->computeError();
+            ++curveSampleCount[curveIndex];
+            const double pixelError = std::abs(edge->error()[0]);
+            if (edge->isDepthPositive() && pixelError <= curvePixelThreshold[3])
+            {
+                ++curveInlierCount[curveIndex];
+                curveInlierErrors[curveIndex].push_back(pixelError);
+            }
+        }
+
+        int curveInlierAssociations = 0;
+        for (size_t curveIndex = 0; curveIndex < pFrame->mvBezierCurves.size(); ++curveIndex)
+        {
+            if (curveIndex >= pFrame->mvpMapCurves.size() || !pFrame->mvpMapCurves[curveIndex])
+            {
+                pFrame->mvbCurveOutlier[curveIndex] = false;
+                continue;
+            }
+
+            const double inlierRatio = curveSampleCount[curveIndex] > 0 ? static_cast<double>(curveInlierCount[curveIndex]) / curveSampleCount[curveIndex] : 0.0;
+            double medianError = std::numeric_limits<double>::max();
+            if (!curveInlierErrors[curveIndex].empty())
+            {
+                vector<double> &errors = curveInlierErrors[curveIndex];
+                const size_t middle = errors.size() / 2;
+                std::nth_element(errors.begin(), errors.begin() + middle, errors.end());
+                medianError = errors[middle];
+            }
+
+            pFrame->mvbCurveOutlier[curveIndex] = curveInlierCount[curveIndex] < 3 || inlierRatio < 0.5 || medianError > curvePixelThreshold[3];
+            if (!pFrame->mvbCurveOutlier[curveIndex])
+                ++curveInlierAssociations;
+        }
+
+        return nInitialCorrespondences - nBad + curveInlierAssociations;
     }
 
-    int Optimizer::PoseOptimizationWithCurves(Frame *pFrame)
+    int Optimizer::PoseOptimization(Frame *pFrame)
     {
         g2o::SparseOptimizer optimizer;
         g2o::BlockSolver_6_3::LinearSolverType *linearSolver;

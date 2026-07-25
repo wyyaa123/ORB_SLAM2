@@ -338,7 +338,7 @@ namespace ORB_SLAM2
 
         const double dtwCost = std::min(OrientationIndependentDtw(mapSamples, observedSamples), OrientationIndependentDtw(observedSamples, mapSamples));
 
-        result.cost = 0.55 * dtwCost + 0.30 * meanDistance + 0.90 * meanDirectionCost;
+        result.cost = 0.55 * dtwCost + 0.30 * meanDistance + 0.15 * meanDirectionCost;
         result.minMapIndex = observedToMap.minReferenceIndex;
         result.maxMapIndex = observedToMap.maxReferenceIndex;
         result.valid = std::isfinite(result.cost);
@@ -426,8 +426,111 @@ namespace ORB_SLAM2
     {
     }
 
+    void CurveMatcher::BuildFixedSampleCorrespondences(Frame &frame)
+    {
+        frame.mvCurveSampleCorrespondences.clear();
+        if (!mCurveConfig || frame.mTcw.empty() || frame.mvBezierCurves.empty())
+            return;
+
+        std::unordered_map<MapCurve *, std::vector<size_t>> observedCurvesByMapCurve;
+        for (size_t curveIndex = 0; curveIndex < frame.mvpMapCurves.size(); ++curveIndex)
+        {
+            MapCurve *pMapCurve = frame.mvpMapCurves[curveIndex];
+            if (pMapCurve && curveIndex < frame.mvBezierCurves.size() && frame.mvBezierCurves[curveIndex].controlPoints.size() >= 2)
+                observedCurvesByMapCurve[pMapCurve].push_back(curveIndex);
+        }
+
+        const double confidenceRadius = std::max(1.0f, mCurveConfig->matchSearchRadius);
+        const double inverseConfidenceVariance = 1.0 / (2.0 * confidenceRadius * confidenceRadius);
+        for (const auto &association : observedCurvesByMapCurve)
+        {
+            MapCurve *pMapCurve = association.first;
+            if (!pMapCurve || pMapCurve->isBad())
+                continue;
+
+            const std::vector<cv::Point3d> worldPoints = pMapCurve->GetCurvePoints();
+            std::vector<CurveSampleCorrespondence> curveCorrespondences;
+            std::vector<cv::Point2f> projectedPoints;
+            curveCorrespondences.reserve(worldPoints.size());
+            projectedPoints.reserve(worldPoints.size());
+
+            for (const cv::Point3d &worldPoint : worldPoints)
+            {
+                cv::Point2f projectedPoint;
+                if (!ProjectWorldPoint(worldPoint, frame, projectedPoint) || projectedPoint.x < frame.mnMinX || projectedPoint.x > frame.mnMaxX || projectedPoint.y < frame.mnMinY || projectedPoint.y > frame.mnMaxY)
+                    continue;
+
+                bool foundClosestPoint = false;
+                size_t bestCurveIndex = 0;
+                double bestParameter = 0.0;
+                double bestDistance = std::numeric_limits<double>::max();
+                cv::Point2d bestPoint;
+                cv::Point2d bestNormal;
+                for (const size_t curveIndex : association.second)
+                {
+                    double parameter = 0.0;
+                    double distance = 0.0;
+                    cv::Point2d closestPoint;
+                    cv::Point2d normal;
+                    if (!frame.mvBezierCurves[curveIndex].FindClosestPoint(cv::Point2d(projectedPoint.x, projectedPoint.y), parameter, closestPoint, normal, distance))
+                        continue;
+                    if (distance < bestDistance)
+                    {
+                        foundClosestPoint = true;
+                        bestCurveIndex = curveIndex;
+                        bestParameter = parameter;
+                        bestDistance = distance;
+                        bestPoint = closestPoint;
+                        bestNormal = normal;
+                    }
+                }
+                if (!foundClosestPoint)
+                    continue;
+
+                CurveSampleCorrespondence correspondence;
+                correspondence.pMapCurve = pMapCurve;
+                correspondence.worldPoint = worldPoint;
+                correspondence.observedPoint = bestPoint;
+                correspondence.observedNormal = bestNormal;
+                correspondence.observedCurveIndex = bestCurveIndex;
+                correspondence.observedParameter = bestParameter;
+                correspondence.initialDistance = bestDistance;
+                curveCorrespondences.push_back(correspondence);
+                projectedPoints.push_back(projectedPoint);
+            }
+
+            if (curveCorrespondences.empty())
+                continue;
+
+            std::vector<double> arcLengthWeights(curveCorrespondences.size(), 1.0);
+            if (curveCorrespondences.size() > 1)
+            {
+                for (size_t sampleIndex = 0; sampleIndex < curveCorrespondences.size(); ++sampleIndex)
+                {
+                    const double previousLength = sampleIndex > 0 ? cv::norm(projectedPoints[sampleIndex] - projectedPoints[sampleIndex - 1]) : cv::norm(projectedPoints[1] - projectedPoints[0]);
+                    const double nextLength = sampleIndex + 1 < projectedPoints.size() ? cv::norm(projectedPoints[sampleIndex + 1] - projectedPoints[sampleIndex]) : cv::norm(projectedPoints.back() - projectedPoints[projectedPoints.size() - 2]);
+                    arcLengthWeights[sampleIndex] = std::max(1.0, std::min(12.0, 0.5 * (previousLength + nextLength)));
+                }
+            }
+
+            double totalArcLengthWeight = 0.0;
+            for (const double weight : arcLengthWeights)
+                totalArcLengthWeight += weight;
+            for (size_t sampleIndex = 0; sampleIndex < curveCorrespondences.size(); ++sampleIndex)
+            {
+                CurveSampleCorrespondence &correspondence = curveCorrespondences[sampleIndex];
+                double confidence = std::exp(-correspondence.initialDistance * correspondence.initialDistance * inverseConfidenceVariance);
+                if (correspondence.observedParameter <= 0.02 || correspondence.observedParameter >= 0.98)
+                    confidence *= 0.25;
+                correspondence.normalizedWeight = arcLengthWeights[sampleIndex] * std::max(1e-3, confidence) / totalArcLengthWeight;
+                frame.mvCurveSampleCorrespondences.push_back(correspondence);
+            }
+        }
+    }
+
     int CurveMatcher::AssociateMapCurvesToFrame(const std::vector<MapCurve *> &mapCurves, Frame &currentFrame)
     {
+        currentFrame.mvCurveSampleCorrespondences.clear();
         if (!mCurveConfig || mapCurves.empty() || currentFrame.mvBezierCurves.empty() || currentFrame.mTcw.empty())
         {
             return 0;
@@ -554,7 +657,10 @@ namespace ORB_SLAM2
         }
 
         if (rowToCurveIndex.empty())
+        {
+            BuildFixedSampleCorrespondences(currentFrame);
             return 0;
+        }
 
         const size_t rowCount = rowToCurveIndex.size();
         const size_t mapCount = projectedCurves.size();
@@ -672,6 +778,7 @@ namespace ORB_SLAM2
             ++matchCount;
         }
 
+        BuildFixedSampleCorrespondences(currentFrame);
         return matchCount;
     }
 } // namespace ORB_SLAM2

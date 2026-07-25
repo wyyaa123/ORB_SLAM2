@@ -42,120 +42,119 @@ namespace ORB_SLAM2
         return mCurvePoints;
     }
 
-    size_t MapCurve::ExtendWithObservation(const std::vector<cv::Point3d> &observedPoints, const double maximumAssociationDistance, const size_t minimumOverlapPoints)
+    bool MapCurve::ProjectWorldPoint(const cv::Point3d &worldPoint, const Frame &frame, cv::Point2d &imagePoint)
     {
-        if (observedPoints.size() < 2 || maximumAssociationDistance <= 0.0)
+        if (frame.mTcw.empty())
+            return false;
+
+        const double cameraX = frame.mTcw.at<float>(0, 0) * worldPoint.x + frame.mTcw.at<float>(0, 1) * worldPoint.y + frame.mTcw.at<float>(0, 2) * worldPoint.z + frame.mTcw.at<float>(0, 3);
+        const double cameraY = frame.mTcw.at<float>(1, 0) * worldPoint.x + frame.mTcw.at<float>(1, 1) * worldPoint.y + frame.mTcw.at<float>(1, 2) * worldPoint.z + frame.mTcw.at<float>(1, 3);
+        const double cameraZ = frame.mTcw.at<float>(2, 0) * worldPoint.x + frame.mTcw.at<float>(2, 1) * worldPoint.y + frame.mTcw.at<float>(2, 2) * worldPoint.z + frame.mTcw.at<float>(2, 3);
+        if (!std::isfinite(cameraX) || !std::isfinite(cameraY) || !std::isfinite(cameraZ) || cameraZ <= 0.0)
+            return false;
+
+        imagePoint.x = frame.fx * cameraX / cameraZ + frame.cx;
+        imagePoint.y = frame.fy * cameraY / cameraZ + frame.cy;
+        return std::isfinite(imagePoint.x) && std::isfinite(imagePoint.y);
+    }
+
+    size_t MapCurve::FindNearestPointIndex(const cv::Point2d &queryPoint, const std::vector<cv::Point2d> &points)
+    {
+        if (points.empty())
+            return 0;
+
+        size_t nearestIndex = 0;
+        double nearestDistanceSquared = std::numeric_limits<double>::max();
+        for (size_t pointIndex = 0; pointIndex < points.size(); ++pointIndex)
+        {
+            const cv::Point2d difference = points[pointIndex] - queryPoint;
+            const double distanceSquared = difference.dot(difference);
+            if (distanceSquared < nearestDistanceSquared)
+            {
+                nearestDistanceSquared = distanceSquared;
+                nearestIndex = pointIndex;
+            }
+        }
+        return nearestIndex;
+    }
+
+    size_t MapCurve::ExtendWithObservation(const Frame &frame, const size_t observedCurveIndex)
+    {
+        if (observedCurveIndex >= frame.mvBezierCurves.size() || frame.mTcw.empty())
+            return 0;
+
+        const BezierCurve &observedCurve = frame.mvBezierCurves[observedCurveIndex];
+        const std::vector<cv::Point3d> observedWorldPoints = frame.UnprojectCurve(static_cast<int>(observedCurveIndex));
+        std::vector<cv::Point2d> observedImagePoints;
+        observedImagePoints.reserve(observedCurve.sampledPoints.size());
+        for (const orderedEdgePoint &point : observedCurve.sampledPoints)
+        {
+            if (point.depth > 0.0f)
+                observedImagePoints.push_back(cv::Point2d(point.x, point.y));
+        }
+        if (observedWorldPoints.size() < 2 || observedWorldPoints.size() != observedImagePoints.size())
             return 0;
 
         unique_lock<mutex> lock(mMutexPos);
         if (mCurvePoints.size() < 2)
         {
-            mCurvePoints = observedPoints;
-            return observedPoints.size();
+            mCurvePoints = observedWorldPoints;
+            return observedWorldPoints.size();
         }
 
-        const double maximumDistanceSquared = maximumAssociationDistance * maximumAssociationDistance;
-        std::vector<cv::Point3d> orientedObservation = observedPoints;
-        std::vector<size_t> nearestMapIndices;
-        std::vector<double> nearestMapDistancesSquared;
-        const auto computeNearestMapPoints = [this, &nearestMapIndices, &nearestMapDistancesSquared](const std::vector<cv::Point3d> &observation)
+        std::vector<cv::Point2d> projectedMapPoints;
+        std::vector<size_t> projectedMapIndices;
+        projectedMapPoints.reserve(mCurvePoints.size());
+        projectedMapIndices.reserve(mCurvePoints.size());
+        for (size_t mapPointIndex = 0; mapPointIndex < mCurvePoints.size(); ++mapPointIndex)
         {
-            nearestMapIndices.assign(observation.size(), 0);
-            nearestMapDistancesSquared.assign(observation.size(), std::numeric_limits<double>::max());
-            for (size_t observationIndex = 0; observationIndex < observation.size(); ++observationIndex)
-            {
-                for (size_t mapIndex = 0; mapIndex < mCurvePoints.size(); ++mapIndex)
-                {
-                    const cv::Point3d delta = observation[observationIndex] - mCurvePoints[mapIndex];
-                    const double distanceSquared = delta.dot(delta);
-                    if (distanceSquared < nearestMapDistancesSquared[observationIndex])
-                    {
-                        nearestMapDistancesSquared[observationIndex] = distanceSquared;
-                        nearestMapIndices[observationIndex] = mapIndex;
-                    }
-                }
-            }
-        };
+            cv::Point2d projectedPoint;
+            if (!ProjectWorldPoint(mCurvePoints[mapPointIndex], frame, projectedPoint) || projectedPoint.x < frame.mnMinX || projectedPoint.x > frame.mnMaxX || projectedPoint.y < frame.mnMinY || projectedPoint.y > frame.mnMaxY)
+                continue;
+            projectedMapPoints.push_back(projectedPoint);
+            projectedMapIndices.push_back(mapPointIndex);
+        }
+        if (projectedMapPoints.size() < 2)
+            return 0;
 
-        computeNearestMapPoints(orientedObservation);
-        size_t firstOverlapIndex = orientedObservation.size();
+        std::vector<cv::Point2d> orientedImagePoints = observedImagePoints;
+        std::vector<cv::Point3d> orientedWorldPoints = observedWorldPoints;
+        // Make the current observation follow the same front-to-back order as the projected map curve.
+        const double forwardEndpointCost = cv::norm(orientedImagePoints.front() - projectedMapPoints.front()) + cv::norm(orientedImagePoints.back() - projectedMapPoints.back());
+        const double reverseEndpointCost = cv::norm(orientedImagePoints.front() - projectedMapPoints.back()) + cv::norm(orientedImagePoints.back() - projectedMapPoints.front());
+        if (reverseEndpointCost < forwardEndpointCost)
+        {
+            std::reverse(orientedImagePoints.begin(), orientedImagePoints.end());
+            std::reverse(orientedWorldPoints.begin(), orientedWorldPoints.end());
+        }
+
+        size_t firstOverlapIndex = orientedImagePoints.size();
         size_t lastOverlapIndex = 0;
-        size_t overlapCount = 0;
-        for (size_t observationIndex = 0; observationIndex < orientedObservation.size(); ++observationIndex)
+        // The nearest observed indices covered by all visible map samples define the overlap interval.
+        for (const cv::Point2d &projectedMapPoint : projectedMapPoints)
         {
-            if (nearestMapDistancesSquared[observationIndex] <= maximumDistanceSquared)
-            {
-                firstOverlapIndex = std::min(firstOverlapIndex, observationIndex);
-                lastOverlapIndex = observationIndex;
-                ++overlapCount;
-            }
+            const size_t nearestObservedIndex = FindNearestPointIndex(projectedMapPoint, orientedImagePoints);
+            firstOverlapIndex = std::min(firstOverlapIndex, nearestObservedIndex);
+            lastOverlapIndex = std::max(lastOverlapIndex, nearestObservedIndex);
         }
-        if (overlapCount < std::max<size_t>(2, minimumOverlapPoints) || firstOverlapIndex >= orientedObservation.size())
+        if (firstOverlapIndex >= orientedImagePoints.size())
             return 0;
 
-        if (nearestMapIndices[firstOverlapIndex] > nearestMapIndices[lastOverlapIndex])
-        {
-            std::reverse(orientedObservation.begin(), orientedObservation.end());
-            computeNearestMapPoints(orientedObservation);
-            firstOverlapIndex = orientedObservation.size();
-            lastOverlapIndex = 0;
-            overlapCount = 0;
-            for (size_t observationIndex = 0; observationIndex < orientedObservation.size(); ++observationIndex)
-            {
-                if (nearestMapDistancesSquared[observationIndex] <= maximumDistanceSquared)
-                {
-                    firstOverlapIndex = std::min(firstOverlapIndex, observationIndex);
-                    lastOverlapIndex = observationIndex;
-                    ++overlapCount;
-                }
-            }
-        }
-        if (overlapCount < std::max<size_t>(2, minimumOverlapPoints) || firstOverlapIndex >= orientedObservation.size() || nearestMapIndices[firstOverlapIndex] > nearestMapIndices[lastOverlapIndex])
-            return 0;
-
-        const size_t edgeTolerance = std::max<size_t>(2, mCurvePoints.size() / 10);
-        bool reachesMapFront = nearestMapIndices[firstOverlapIndex] <= edgeTolerance && firstOverlapIndex > 0;
-        bool reachesMapBack = nearestMapIndices[lastOverlapIndex] + edgeTolerance >= mCurvePoints.size() - 1 && lastOverlapIndex + 1 < orientedObservation.size();
-        if (reachesMapFront)
-        {
-            const cv::Point3d mapDirection = mCurvePoints.front() - mCurvePoints[1];
-            const cv::Point3d observationDirection = orientedObservation[firstOverlapIndex - 1] - orientedObservation[firstOverlapIndex];
-            const double directionLengths = cv::norm(mapDirection) * cv::norm(observationDirection);
-            reachesMapFront = directionLengths > 1e-9 && mapDirection.dot(observationDirection) / directionLengths >= 0.5;
-        }
-        if (reachesMapBack)
-        {
-            const cv::Point3d mapDirection = mCurvePoints.back() - mCurvePoints[mCurvePoints.size() - 2];
-            const cv::Point3d observationDirection = orientedObservation[lastOverlapIndex + 1] - orientedObservation[lastOverlapIndex];
-            const double directionLengths = cv::norm(mapDirection) * cv::norm(observationDirection);
-            reachesMapBack = directionLengths > 1e-9 && mapDirection.dot(observationDirection) / directionLengths >= 0.5;
-        }
-        const double maximumExtensionGap = 3.0 * maximumAssociationDistance;
-        size_t prefixBegin = firstOverlapIndex;
-        if (reachesMapFront)
-        {
-            while (prefixBegin > 0 && cv::norm(orientedObservation[prefixBegin] - orientedObservation[prefixBegin - 1]) <= maximumExtensionGap)
-                --prefixBegin;
-        }
-        size_t suffixEnd = lastOverlapIndex;
-        if (reachesMapBack)
-        {
-            while (suffixEnd + 1 < orientedObservation.size() && cv::norm(orientedObservation[suffixEnd + 1] - orientedObservation[suffixEnd]) <= maximumExtensionGap)
-                ++suffixEnd;
-        }
-
-        const size_t prefixCount = reachesMapFront ? firstOverlapIndex - prefixBegin : 0;
-        const size_t suffixCount = reachesMapBack ? suffixEnd - lastOverlapIndex : 0;
+        const bool mapFrontIsVisible = projectedMapIndices.front() == 0;
+        const bool mapBackIsVisible = projectedMapIndices.back() + 1 == mCurvePoints.size();
+        const size_t prefixCount = mapFrontIsVisible ? firstOverlapIndex : 0;
+        const size_t suffixCount = mapBackIsVisible && lastOverlapIndex + 1 < orientedWorldPoints.size() ? orientedWorldPoints.size() - lastOverlapIndex - 1 : 0;
         if (prefixCount == 0 && suffixCount == 0)
             return 0;
 
         std::vector<cv::Point3d> extendedCurve;
         extendedCurve.reserve(prefixCount + mCurvePoints.size() + suffixCount);
         if (prefixCount > 0)
-            extendedCurve.insert(extendedCurve.end(), orientedObservation.begin() + prefixBegin, orientedObservation.begin() + firstOverlapIndex);
+            extendedCurve.insert(extendedCurve.end(), orientedWorldPoints.begin(), orientedWorldPoints.begin() + firstOverlapIndex);
+        // Retain the existing map geometry in the overlap and append only the observation outside both ends.
         extendedCurve.insert(extendedCurve.end(), mCurvePoints.begin(), mCurvePoints.end());
         if (suffixCount > 0)
-            extendedCurve.insert(extendedCurve.end(), orientedObservation.begin() + lastOverlapIndex + 1, orientedObservation.begin() + suffixEnd + 1);
+            extendedCurve.insert(extendedCurve.end(), orientedWorldPoints.begin() + lastOverlapIndex + 1, orientedWorldPoints.end());
         mCurvePoints.swap(extendedCurve);
         return prefixCount + suffixCount;
     }

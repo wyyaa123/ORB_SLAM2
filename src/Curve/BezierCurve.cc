@@ -103,6 +103,108 @@ namespace ORB_SLAM2
         return cvRound(a.x) == cvRound(b.x) && cvRound(a.y) == cvRound(b.y);
     }
 
+    cv::Point2d BezierCurve::Evaluate(const double parameter) const
+    {
+        const orderedEdgePoint point = evaluate(controlPoints, parameter);
+        return cv::Point2d(point.x, point.y);
+    }
+
+    cv::Point2d BezierCurve::EvaluateDerivative(const double parameter, const int derivativeOrder) const
+    {
+        return evaluateDerivative(controlPoints, parameter, derivativeOrder);
+    }
+
+    bool BezierCurve::FindClosestPoint(const cv::Point2d &queryPoint, double &closestParameter, cv::Point2d &closestPoint, cv::Point2d &normal, double &distance, const std::size_t coarseSampleCount) const
+    {
+        if (controlPoints.size() < 2)
+            return false;
+
+        const std::size_t sampleCount = std::max<std::size_t>(8, coarseSampleCount);
+        std::vector<double> squaredDistances(sampleCount + 1, 0.0);
+        for (std::size_t sampleIndex = 0; sampleIndex <= sampleCount; ++sampleIndex)
+        {
+            const double parameter = static_cast<double>(sampleIndex) / static_cast<double>(sampleCount);
+            const cv::Point2d difference = Evaluate(parameter) - queryPoint;
+            squaredDistances[sampleIndex] = difference.dot(difference);
+        }
+
+        std::vector<double> initialParameters;
+        initialParameters.reserve(sampleCount + 1);
+        initialParameters.push_back(0.0);
+        for (std::size_t sampleIndex = 1; sampleIndex < sampleCount; ++sampleIndex)
+        {
+            if (squaredDistances[sampleIndex] <= squaredDistances[sampleIndex - 1] && squaredDistances[sampleIndex] <= squaredDistances[sampleIndex + 1])
+                initialParameters.push_back(static_cast<double>(sampleIndex) / static_cast<double>(sampleCount));
+        }
+        initialParameters.push_back(1.0);
+
+        double bestSquaredDistance = std::numeric_limits<double>::max();
+        closestParameter = 0.0;
+        closestPoint = Evaluate(0.0);
+        for (double parameter : initialParameters)
+        {
+            for (int iteration = 0; iteration < 12; ++iteration)
+            {
+                const cv::Point2d curvePoint = Evaluate(parameter);
+                const cv::Point2d firstDerivative = EvaluateDerivative(parameter, 1);
+                const cv::Point2d secondDerivative = EvaluateDerivative(parameter, 2);
+                const cv::Point2d difference = curvePoint - queryPoint;
+                const double firstDistanceDerivative = difference.dot(firstDerivative);
+                const double secondDistanceDerivative = firstDerivative.dot(firstDerivative) + difference.dot(secondDerivative);
+                if (std::abs(secondDistanceDerivative) <= 1e-12)
+                    break;
+
+                const double nextParameter = std::max(0.0, std::min(1.0, parameter - firstDistanceDerivative / secondDistanceDerivative));
+                if (std::abs(nextParameter - parameter) <= 1e-8)
+                {
+                    parameter = nextParameter;
+                    break;
+                }
+                parameter = nextParameter;
+            }
+
+            const cv::Point2d candidatePoint = Evaluate(parameter);
+            const cv::Point2d difference = candidatePoint - queryPoint;
+            const double squaredDistance = difference.dot(difference);
+            if (squaredDistance < bestSquaredDistance)
+            {
+                bestSquaredDistance = squaredDistance;
+                closestParameter = parameter;
+                closestPoint = candidatePoint;
+            }
+        }
+
+        for (const double endpointParameter : {0.0, 1.0})
+        {
+            const cv::Point2d endpoint = Evaluate(endpointParameter);
+            const cv::Point2d difference = endpoint - queryPoint;
+            const double squaredDistance = difference.dot(difference);
+            if (squaredDistance < bestSquaredDistance)
+            {
+                bestSquaredDistance = squaredDistance;
+                closestParameter = endpointParameter;
+                closestPoint = endpoint;
+            }
+        }
+
+        cv::Point2d tangent = EvaluateDerivative(closestParameter, 1);
+        double tangentLength = cv::norm(tangent);
+        if (tangentLength <= 1e-9)
+        {
+            const double firstParameter = std::max(0.0, closestParameter - 1e-4);
+            const double secondParameter = std::min(1.0, closestParameter + 1e-4);
+            tangent = Evaluate(secondParameter) - Evaluate(firstParameter);
+            tangentLength = cv::norm(tangent);
+        }
+        if (tangentLength <= 1e-9 || !std::isfinite(bestSquaredDistance))
+            return false;
+
+        tangent *= 1.0 / tangentLength;
+        normal = cv::Point2d(-tangent.y, tangent.x);
+        distance = std::sqrt(bestSquaredDistance);
+        return true;
+    }
+
     static inline ArcLengthTable buildArcLengthTable(const BezierCurve &curve, std::size_t segmentCount)
     {
         segmentCount = std::max<std::size_t>(segmentCount, 1);

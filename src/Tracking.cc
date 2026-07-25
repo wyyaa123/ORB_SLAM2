@@ -1123,7 +1123,7 @@ namespace ORB_SLAM2
 
         mCurrentFrame.mvpMapPoints = vpMapPointMatches;
 
-        Optimizer::PoseOptimization(&mCurrentFrame);
+        Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
 
         // Discard outliers
         int nmatchesMap = 0;
@@ -1339,7 +1339,7 @@ namespace ORB_SLAM2
         curveMatcher.AssociateMapCurvesToFrame(mLastFrame.mvpMapCurves, mCurrentFrame);
 
         // Optimize frame pose with all matches
-        Optimizer::PoseOptimization(&mCurrentFrame);
+        Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
 
         // Discard outliers
         int nmatchesMap = 0;
@@ -1392,8 +1392,7 @@ namespace ORB_SLAM2
             MapCurve *pMapCurve = mCurrentFrame.mvpMapCurves[curveIndex];
             if (!pMapCurve || (curveIndex < mCurrentFrame.mvbCurveOutlier.size() && mCurrentFrame.mvbCurveOutlier[curveIndex]))
                 continue;
-            const std::vector<cv::Point3d> unprojectedPoints = mCurrentFrame.UnprojectCurve(static_cast<int>(curveIndex));
-            pMapCurve->ExtendWithObservation(unprojectedPoints, mCurveConfig->mapFusionDistance, static_cast<size_t>(mCurveConfig->minFusionOverlap));
+            pMapCurve->ExtendWithObservation(mCurrentFrame, curveIndex);
         }
     }
 
@@ -1407,7 +1406,10 @@ namespace ORB_SLAM2
         SearchLocalPoints();
 
         // Optimize Pose
-        Optimizer::PoseOptimization(&mCurrentFrame);
+        if (mSensor == System::RGBD && mCurveConfig && mCurveConfig->enabled)
+            Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
+        else
+            Optimizer::PoseOptimization(&mCurrentFrame);
         mnMatchesInliers = 0;
 
         // Update MapPoints Statistics

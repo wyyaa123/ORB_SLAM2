@@ -25,6 +25,9 @@ namespace ORB_SLAM2
 
         bool hasEdgeChain() const { return edgeChainId != -1; }
 
+        cv::Point2d Evaluate(double parameter) const;
+        cv::Point2d EvaluateDerivative(double parameter, int derivativeOrder = 1) const;
+        bool FindClosestPoint(const cv::Point2d &queryPoint, double &closestParameter, cv::Point2d &closestPoint, cv::Point2d &normal, double &distance, std::size_t coarseSampleCount = 32) const;
         void sampleByArcLengthSpacing(int spacing, std::size_t lookupSegmentCount = 200, bool removeDuplicatePixels = true);
 
         void reserve(size_t controlPointCount) { controlPoints.reserve(controlPointCount); }

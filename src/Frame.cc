@@ -47,7 +47,7 @@ namespace ORB_SLAM2
           mvKeysRight(frame.mvKeysRight), mvKeysUn(frame.mvKeysUn), mvuRight(frame.mvuRight), mvBezierCurves(frame.mvBezierCurves),
           mvDepth(frame.mvDepth), mBowVec(frame.mBowVec), mFeatVec(frame.mFeatVec),
           mDescriptors(frame.mDescriptors.clone()), mDescriptorsRight(frame.mDescriptorsRight.clone()),
-          mvpMapPoints(frame.mvpMapPoints), mvpMapCurves(frame.mvpMapCurves), mvbOutlier(frame.mvbOutlier), mvbCurveOutlier(frame.mvbCurveOutlier), mnId(frame.mnId),
+          mvpMapPoints(frame.mvpMapPoints), mvpMapCurves(frame.mvpMapCurves), mvCurveSampleCorrespondences(frame.mvCurveSampleCorrespondences), mvbOutlier(frame.mvbOutlier), mvbCurveOutlier(frame.mvbCurveOutlier), mnId(frame.mnId),
           mpReferenceKF(frame.mpReferenceKF), mnScaleLevels(frame.mnScaleLevels),
           mfScaleFactor(frame.mfScaleFactor), mfLogScaleFactor(frame.mfLogScaleFactor),
           mvScaleFactors(frame.mvScaleFactors), mvInvScaleFactors(frame.mvInvScaleFactors),
@@ -314,6 +314,7 @@ namespace ORB_SLAM2
 
         NC = mvBezierCurves.size();
         mvpMapCurves = vector<MapCurve *>(NC, static_cast<MapCurve *>(NULL));
+        mvCurveSampleCorrespondences.clear();
         mvbCurveOutlier.assign(NC, false);
     }
 
@@ -824,7 +825,7 @@ namespace ORB_SLAM2
             return cv::Mat();
     }
 
-    std::vector<cv::Point3d> Frame::UnprojectCurve(int i)
+    std::vector<cv::Point3d> Frame::UnprojectCurve(int i) const
     {
         const BezierCurve &curve = mvBezierCurves[i];
         std::vector<cv::Point3d> unprojectedPoints;

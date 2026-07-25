@@ -23,7 +23,7 @@
 
 #include "Map.h"
 #include "MapPoint.h"
-#include "MapCurve.h"
+#include "Curve/MapCurve.h"
 #include "KeyFrame.h"
 #include "LoopClosing.h"
 #include "Frame.h"

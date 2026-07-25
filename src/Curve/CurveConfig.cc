@@ -36,8 +36,6 @@ namespace ORB_SLAM2
         minCandidateHits = ReadInt(settings, "Curve.MinCandidateHits", 3);
         minCandidateCoverage = ReadFloat(settings, "Curve.MinCandidateCoverage", 0.2f);
         unmatchedCost = ReadFloat(settings, "Curve.UnmatchedCost", 6.0f);
-        mapFusionDistance = std::max(0.001f, ReadFloat(settings, "Curve.MapFusionDistance", 0.08f));
-        minFusionOverlap = std::max(2, ReadInt(settings, "Curve.MinFusionOverlap", 3));
     }
 
 } // namespace ORB_SLAM2

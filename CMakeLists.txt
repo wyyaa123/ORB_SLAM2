@@ -82,6 +82,8 @@ src/Curve/EdgeExtracter.cc
 src/Curve/MapCurve.cc
 src/Curve/Hungarian.cpp
 src/Curve/CurveMatch.cc
+src/Curve/CurveObservation.cc
+src/Curve/CurveProjectionEdge.cc
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -129,4 +131,3 @@ target_link_libraries(mono_kitti ${PROJECT_NAME})
 add_executable(mono_euroc
 Examples/Monocular/mono_euroc.cc)
 target_link_libraries(mono_euroc ${PROJECT_NAME})
-

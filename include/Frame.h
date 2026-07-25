@@ -31,6 +31,7 @@
 #include "KeyFrame.h"
 #include "ORBextractor.h"
 #include "Curve/BezierCurve.h"
+#include "Curve/CurveObservation.h"
 #include "Curve/EdgeExtracter.h"
 #include "Curve/CurveConfig.h"
 
@@ -109,7 +110,7 @@ namespace ORB_SLAM2
         // Backprojects a keypoint (if stereo/depth info available) into 3D world coordinates.
         cv::Mat UnprojectStereo(const int &i);
 
-        std::vector<cv::Point3d> UnprojectCurve(int i);
+        std::vector<cv::Point3d> UnprojectCurve(int i) const;
 
     public:
         // Vocabulary used for relocalization.
@@ -170,6 +171,7 @@ namespace ORB_SLAM2
         std::vector<MapPoint *> mvpMapPoints;
 
         std::vector<MapCurve *> mvpMapCurves;
+        std::vector<CurveSampleCorrespondence> mvCurveSampleCorrespondences;
 
         // Flag to identify outlier associations.
         std::vector<bool> mvbOutlier;

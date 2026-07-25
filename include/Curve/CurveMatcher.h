@@ -117,6 +117,7 @@ namespace ORB_SLAM2
         CurveSimilarity ComputeCurveSimilarity(const ProjectedMapCurve &mapCurve, const std::vector<cv::Point2f> &observedCurve, float maximumMeanDistance);
         bool EndpointsAreContinuous(const std::vector<cv::Point2f> &first, const std::vector<cv::Point2f> &second);
         bool FragmentIsCompatible(std::size_t candidateCurveIndex, const CurveSimilarity &candidateSimilarity, const std::vector<AcceptedFragment> &acceptedFragments, const Frame &frame, const std::vector<std::vector<cv::Point2f>> &observedCurves, std::size_t projectedMapSampleCount);
+        void BuildFixedSampleCorrespondences(Frame &frame);
     };
 }
 
