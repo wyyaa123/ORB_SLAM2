@@ -175,7 +175,7 @@ namespace ORB_SLAM2
                 if (!imCurveAssociations.empty())
                 {
                     cv::imshow("ORB-SLAM2: Curve Associations", imCurveAssociations);
-                    cv::imwrite(to_string(frameCounter) + "_curve_associations.png", imCurveAssociations);
+                    // cv::imwrite(to_string(frameCounter) + "_curve_associations.png", imCurveAssociations);
                     ++frameCounter;
                 }
             }

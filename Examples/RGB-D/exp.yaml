@@ -77,6 +77,7 @@ Curve.MinDepth: 0.02
 Curve.MaxDepth: 4.0
 Curve.ValidRatio: 0.5
 Curve.MatchSearchRadius: 10
+
 Curve.MinCandidateHits: 3
 Curve.MinCandidateCoverage: 0.2
 Curve.UnmatchedCost: 6.0

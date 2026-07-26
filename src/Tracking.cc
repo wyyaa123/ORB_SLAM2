@@ -212,7 +212,7 @@ namespace ORB_SLAM2
         return mCurrentFrame.mTcw.clone();
     }
 
-    cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB, const cv::Mat &imD, const double &timestamp)
+    cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB, const cv::Mat &imD, const cv::Mat &imSem, const double &timestamp)
     {
         mImGray = imRGB;
         cv::Mat imDepth = imD;
@@ -239,7 +239,7 @@ namespace ORB_SLAM2
 
         if (mCurveConfig->enabled)
         {
-            mCurrentFrame.ExtractCurve(mImGray, imDepth, mCurveConfig);
+            mCurrentFrame.ExtractCurve(mImGray, imDepth, mCurveConfig, imSem);
             TrackWithCurves();
         }
         else

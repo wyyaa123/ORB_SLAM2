@@ -170,7 +170,7 @@ namespace ORB_SLAM2
         return Tcw;
     }
 
-    cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const double &timestamp)
+    cv::Mat System::TrackRGBD(const cv::Mat &im, const cv::Mat &depthmap, const cv::Mat &semmap, const double &timestamp)
     {
         if (mSensor != RGBD)
         {
@@ -212,7 +212,7 @@ namespace ORB_SLAM2
             }
         }
 
-        cv::Mat Tcw = mpTracker->GrabImageRGBD(im, depthmap, timestamp);
+        cv::Mat Tcw = mpTracker->GrabImageRGBD(im, depthmap, semmap, timestamp);
 
         unique_lock<mutex> lock2(mMutexState);
         mTrackingState = mpTracker->mState;

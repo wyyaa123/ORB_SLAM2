@@ -30,7 +30,7 @@
 using namespace std;
 
 void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageFilenamesRGB,
-                vector<string> &vstrImageFilenamesD, vector<double> &vTimestamps);
+                vector<string> &vstrImageFilenamesD, vector<string> &vstrImageFilenamesSem, vector<double> &vTimestamps);
 
 int main(int argc, char **argv)
 {
@@ -44,9 +44,10 @@ int main(int argc, char **argv)
     // Retrieve paths to images
     vector<string> vstrImageFilenamesRGB;
     vector<string> vstrImageFilenamesD;
+    vector<string> vstrImageFilenamesSem;
     vector<double> vTimestamps;
     string strAssociationFilename = string(argv[4]);
-    LoadImages(strAssociationFilename, vstrImageFilenamesRGB, vstrImageFilenamesD, vTimestamps);
+    LoadImages(strAssociationFilename, vstrImageFilenamesRGB, vstrImageFilenamesD, vstrImageFilenamesSem, vTimestamps);
 
     // Check consistency in the number of images and depthmaps
     int nImages = vstrImageFilenamesRGB.size();
@@ -77,12 +78,13 @@ int main(int argc, char **argv)
          << endl;
 
     // Main loop
-    cv::Mat imRGB, imD;
+    cv::Mat imRGB, imD, imSem;
     for (int ni = 0; ni < nImages; ni++)
     {
         // Read image and depthmap from file
         imRGB = cv::imread(string(argv[3]) + "/" + vstrImageFilenamesRGB[ni], CV_LOAD_IMAGE_UNCHANGED);
         imD = cv::imread(string(argv[3]) + "/" + vstrImageFilenamesD[ni], CV_LOAD_IMAGE_UNCHANGED);
+        imSem = cv::imread(string(argv[3]) + "/" + vstrImageFilenamesSem[ni], CV_LOAD_IMAGE_UNCHANGED);
         double tframe = vTimestamps[ni];
 
         if (imRGB.empty())
@@ -100,7 +102,7 @@ int main(int argc, char **argv)
 #endif
 
         // Pass the image to the SLAM system
-        SLAM.TrackRGBD(imRGB, imD, tframe);
+        SLAM.TrackRGBD(imRGB, imD, imSem, tframe);
 
 #ifdef COMPILEDWITHC11
         std::chrono::steady_clock::time_point t2 = std::chrono::steady_clock::now();
@@ -146,7 +148,7 @@ int main(int argc, char **argv)
 }
 
 void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageFilenamesRGB,
-                vector<string> &vstrImageFilenamesD, vector<double> &vTimestamps)
+                vector<string> &vstrImageFilenamesD, vector<string> &vstrImageFilenamesSem, vector<double> &vTimestamps)
 {
     ifstream fAssociation;
     fAssociation.open(strAssociationFilename.c_str());
@@ -159,7 +161,7 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
             stringstream ss;
             ss << s;
             double t;
-            string sRGB, sD;
+            string sRGB, sD, sSem;
             ss >> t;
             vTimestamps.push_back(t * 1e-9);
             ss >> sRGB;
@@ -167,6 +169,9 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
             ss >> t;
             ss >> sD;
             vstrImageFilenamesD.push_back(sD);
+            ss >> t;
+            ss >> sSem;
+            vstrImageFilenamesSem.push_back(sSem);
         }
     }
 }
