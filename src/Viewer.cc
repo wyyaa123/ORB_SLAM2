@@ -70,6 +70,7 @@ namespace ORB_SLAM2
         pangolin::CreatePanel("menu").SetBounds(0.0, 1.0, 0.0, pangolin::Attach::Pix(175));
         pangolin::Var<bool> menuFollowCamera("menu.Follow Camera", true, true);
         pangolin::Var<bool> menuShowPoints("menu.Show Points", true, true);
+        pangolin::Var<bool> menuShowCurves("menu.Show Curves", true, true);
         pangolin::Var<bool> menuShowKeyFrames("menu.Show KeyFrames", true, true);
         pangolin::Var<bool> menuShowGraph("menu.Show Graph", true, true);
         pangolin::Var<bool> menuLocalizationMode("menu.Localization Mode", false, true);
@@ -168,6 +169,8 @@ namespace ORB_SLAM2
                 mpMapDrawer->DrawKeyFrames(menuShowKeyFrames, menuShowGraph);
             if (menuShowPoints)
                 mpMapDrawer->DrawMapPoints();
+            if (menuShowCurves)
+                mpMapDrawer->DrawMapCurves();
 
             pangolin::FinishFrame();
 

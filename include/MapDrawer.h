@@ -39,6 +39,7 @@ namespace ORB_SLAM2
         Map *mpMap;
 
         void DrawMapPoints();
+        void DrawMapCurves();
         void DrawKeyFrames(const bool bDrawKF, const bool bDrawGraph);
         void DrawCurrentCamera(pangolin::OpenGlMatrix &Twc);
         void SetCurrentCameraPose(const cv::Mat &Tcw);

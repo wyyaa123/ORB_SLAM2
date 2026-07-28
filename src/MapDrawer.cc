@@ -77,6 +77,69 @@ namespace ORB_SLAM2
         glEnd();
     }
 
+    void MapDrawer::DrawMapCurves()
+    {
+        const vector<MapCurve *> mapCurves = mpMap->GetAllMapCurves();
+
+        // 固定调色板让同一个 MapCurve 在三维地图和二维关联窗口中始终
+        // 使用稳定颜色；颜色下标只依赖 MapCurve id。
+        const float colors[][3] = {
+            {0.31f, 0.31f, 1.00f}, {0.31f, 1.00f, 0.31f},
+            {1.00f, 0.31f, 0.31f}, {0.31f, 1.00f, 1.00f},
+            {1.00f, 0.31f, 1.00f}, {1.00f, 1.00f, 0.31f},
+            {0.24f, 0.63f, 1.00f}, {1.00f, 0.24f, 0.63f},
+            {1.00f, 0.63f, 0.24f}, {0.24f, 1.00f, 0.63f},
+            {0.63f, 0.24f, 1.00f}, {0.63f, 1.00f, 0.24f}};
+
+        const size_t colorCount = sizeof(colors) / sizeof(colors[0]);
+
+        for (size_t curveIndex = 0;
+             curveIndex < mapCurves.size(); ++curveIndex)
+        {
+            MapCurve *mapCurve = mapCurves[curveIndex];
+            if (!mapCurve || mapCurve->isBad())
+                continue;
+
+            const vector<cv::Point3d> points = mapCurve->GetCurvePoints();
+            if (points.empty())
+                continue;
+
+            const float *color = colors[mapCurve->mnId % colorCount];
+            glColor3f(color[0], color[1], color[2]);
+
+            // 使用 GL_LINES 而不是一条 GL_LINE_STRIP。相邻采样点的三维
+            // 距离超过门限时不连接，避免遮挡断裂或异常深度产生长横线。
+            glLineWidth(2);
+            glBegin(GL_LINES);
+            for (size_t pointIndex = 1; pointIndex < points.size(); ++pointIndex)
+            {
+                const cv::Point3d &first = points[pointIndex - 1];
+                const cv::Point3d &second = points[pointIndex];
+
+                const cv::Point3d difference = second - first;
+                // 非正门限表示完整显示 MapCurve，便于观察关闭三维连续性
+                // 切段后的真实建图结果。
+                if (difference.dot(difference) > 0.1)
+                    continue;
+
+                glVertex3d(first.x, first.y, first.z);
+                glVertex3d(second.x, second.y, second.z);
+            }
+            glEnd();
+
+            // 同时画出采样点，便于观察曲线延长和局部 BA 后的几何变化。
+            glPointSize(3);
+            glBegin(GL_POINTS);
+            for (size_t pointIndex = 0;
+                 pointIndex < points.size(); ++pointIndex)
+            {
+                const cv::Point3d &point = points[pointIndex];
+                glVertex3d(point.x, point.y, point.z);
+            }
+            glEnd();
+        }
+    }
+
     void MapDrawer::DrawKeyFrames(const bool bDrawKF, const bool bDrawGraph)
     {
         const float &w = mKeyFrameSize;
