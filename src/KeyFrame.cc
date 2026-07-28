@@ -228,6 +228,13 @@ namespace ORB_SLAM2
         mvpMapCurves[idx] = static_cast<MapCurve *>(NULL);
     }
 
+    void KeyFrame::ReplaceMapCurveMatch(const size_t &idx, MapCurve *pMC)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        if (idx < mvpMapCurves.size())
+            mvpMapCurves[idx] = pMC;
+    }
+
     void KeyFrame::EraseMapPointMatch(const size_t &idx)
     {
         unique_lock<mutex> lock(mMutexFeatures);
@@ -300,6 +307,12 @@ namespace ORB_SLAM2
         return mvpMapPoints[idx];
     }
 
+    MapCurve *KeyFrame::GetMapCurve(const size_t &idx)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        return idx < mvpMapCurves.size() ? mvpMapCurves[idx] : static_cast<MapCurve *>(NULL);
+    }
+
     void KeyFrame::UpdateConnections()
     {
         map<KeyFrame *, int> KFcounter;
@@ -335,19 +348,20 @@ namespace ORB_SLAM2
             }
         }
 
+        set<MapCurve *> processedMapCurves;
         for (vector<MapCurve *>::iterator vit = vpMC.begin(), vend = vpMC.end(); vit != vend; vit++)
         {
             MapCurve *pMC = *vit;
 
-            if (!pMC)
+            if (!pMC || !processedMapCurves.insert(pMC).second)
                 continue;
 
             if (pMC->isBad())
                 continue;
 
-            map<KeyFrame *, size_t> observations = pMC->GetObservations();
+            map<KeyFrame *, vector<size_t>> observations = pMC->GetObservations();
 
-            for (map<KeyFrame *, size_t>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
+            for (map<KeyFrame *, vector<size_t>>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
             {
                 if (mit->first->mnId == mnId)
                     continue;
@@ -504,6 +518,14 @@ namespace ORB_SLAM2
         for (size_t i = 0; i < mvpMapPoints.size(); i++)
             if (mvpMapPoints[i])
                 mvpMapPoints[i]->EraseObservation(this);
+
+        set<MapCurve *> observedMapCurves;
+        for (MapCurve *pMC : mvpMapCurves)
+        {
+            if (pMC && observedMapCurves.insert(pMC).second)
+                pMC->EraseObservation(this);
+        }
+
         {
             unique_lock<mutex> lock(mMutexConnections);
             unique_lock<mutex> lock1(mMutexFeatures);

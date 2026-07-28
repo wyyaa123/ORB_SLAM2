@@ -88,12 +88,14 @@ namespace ORB_SLAM2
         std::vector<MapCurve *> GetMapCurveMatches();
         void EraseMapPointMatch(const size_t &idx);
         void EraseMapCurveMatch(const size_t &idx);
+        void ReplaceMapCurveMatch(const size_t &idx, MapCurve *pMC);
         void EraseMapPointMatch(MapPoint *pMP);
         void ReplaceMapPointMatch(const size_t &idx, MapPoint *pMP);
         std::set<MapPoint *> GetMapPoints();
         std::vector<MapPoint *> GetMapPointMatches();
         int TrackedMapPoints(const int &minObs);
         MapPoint *GetMapPoint(const size_t &idx);
+        MapCurve *GetMapCurve(const size_t &idx);
 
         // KeyPoint functions
         std::vector<size_t> GetFeaturesInArea(const float &x, const float &y, const float &r) const;

@@ -600,7 +600,6 @@ namespace ORB_SLAM2
 
             if (bOK)
             {
-                UpdateMatchedMapCurves();
                 mvpCurveAssociationCandidates = mLastFrame.mvpMapCurves;
             }
 
@@ -1391,9 +1390,9 @@ namespace ORB_SLAM2
         for (size_t curveIndex = 0; curveIndex < curveCount; ++curveIndex)
         {
             MapCurve *pMapCurve = mCurrentFrame.mvpMapCurves[curveIndex];
-            if (!pMapCurve || (curveIndex < mCurrentFrame.mvbCurveOutlier.size() && mCurrentFrame.mvbCurveOutlier[curveIndex]))
+            if (!pMapCurve || mCurrentFrame.mvbCurveOutlier[curveIndex])
                 continue;
-            pMapCurve->ExtendWithObservation(mCurrentFrame, curveIndex);
+            pMapCurve->ExtendWithObservation(mCurrentFrame, curveIndex, mCurveConfig);
         }
     }
 
@@ -1688,6 +1687,7 @@ namespace ORB_SLAM2
         if (mSensor != System::MONOCULAR)
         {
             mCurrentFrame.UpdatePoseMatrices();
+            UpdateMatchedMapCurves();
 
             // We sort points by the measured depth by the stereo/RGBD sensor.
             // We create all those MapPoints whose depth < mThDepth.
@@ -2113,8 +2113,8 @@ namespace ORB_SLAM2
                 MapCurve *pMC = mCurrentFrame.mvpMapCurves[i];
                 if (!pMC->isBad())
                 {
-                    const map<KeyFrame *, size_t> observations = pMC->GetObservations();
-                    for (map<KeyFrame *, size_t>::const_iterator it = observations.begin(), itend = observations.end(); it != itend; it++)
+                    const map<KeyFrame *, vector<size_t>> observations = pMC->GetObservations();
+                    for (map<KeyFrame *, vector<size_t>>::const_iterator it = observations.begin(), itend = observations.end(); it != itend; it++)
                         keyframeCounter[it->first]++;
                 }
                 else

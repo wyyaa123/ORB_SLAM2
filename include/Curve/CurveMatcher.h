@@ -12,6 +12,7 @@
 namespace ORB_SLAM2
 {
     class Frame;
+    class KeyFrame;
     class MapCurve;
     class orderedEdgePoint;
 
@@ -103,14 +104,18 @@ namespace ORB_SLAM2
         // set from a reference keyframe, the last frame, or the local map.
         int AssociateMapCurvesToFrame(const std::vector<MapCurve *> &mapCurves, Frame &currentFrame);
 
+        int Fuse(KeyFrame *pKF, const std::vector<MapCurve *> &vpMapCurves);
+
     protected:
         CurveConfigPtr mCurveConfig;
 
     private:
         cv::Point2f ToPoint2f(const orderedEdgePoint &point);
         bool ProjectWorldPoint(const cv::Point3d &worldPoint, const Frame &frame, cv::Point2f &imagePoint);
+        bool ProjectWorldPoint(const cv::Point3d &worldPoint, KeyFrame *pKF, cv::Point2f &imagePoint);
         void AppendResampledSegment(const cv::Point2f &first, const cv::Point2f &second, std::vector<cv::Point2f> &samples);
         bool ProjectMapCurve(MapCurve *pMapCurve, const Frame &frame, float margin, ProjectedMapCurve &projected);
+        bool ProjectMapCurve(MapCurve *pMapCurve, KeyFrame *pKF, float margin, ProjectedMapCurve &projected);
         std::vector<cv::Point2f> LimitSamples(const std::vector<cv::Point2f> &points, std::size_t maximumSamples);
         cv::Point2f CurveTangentAt(const std::vector<cv::Point2f> &points, std::size_t index);
         double LocalAlignmentCost(const std::vector<cv::Point2f> &reference, std::size_t referenceIndex, const std::vector<cv::Point2f> &query, std::size_t queryIndex);

@@ -21,6 +21,7 @@
 #include "Frame.h"
 #include "Converter.h"
 #include "ORBmatcher.h"
+#include <algorithm>
 #include <cmath>
 #include <thread>
 #include <tbb/blocked_range.h>
@@ -29,6 +30,85 @@
 
 namespace ORB_SLAM2
 {
+    static bool IsValidCurveDepth(const float depth, const CurveConfigPtr &curveConfig)
+    {
+        return std::isfinite(depth) && depth > curveConfig->minDepth && depth < curveConfig->maxDepth;
+    }
+
+    static float CurveDepthJumpThreshold(const float firstDepth, const float secondDepth, const CurveConfigPtr &curveConfig)
+    {
+        const float relativeThreshold = curveConfig->maxNeighborDepthJumpRatio * std::min(firstDepth, secondDepth);
+        return std::max(curveConfig->maxNeighborDepthJump, relativeThreshold);
+    }
+
+    static void MedianFilterCurveDepths(std::vector<orderedEdgePoint> &points, const CurveConfigPtr &curveConfig)
+    {
+        const int windowSize = curveConfig->depthMedianWindow;
+        if (windowSize <= 1 || points.size() < 3)
+            return;
+
+        const size_t radius = static_cast<size_t>(windowSize / 2);
+        std::vector<float> originalDepths(points.size(), 0.0f);
+        std::vector<float> filteredDepths(points.size(), 0.0f);
+        for (size_t pointIndex = 0; pointIndex < points.size(); ++pointIndex)
+        {
+            originalDepths[pointIndex] = points[pointIndex].depth;
+            filteredDepths[pointIndex] = points[pointIndex].depth;
+        }
+
+        std::vector<float> windowDepths;
+        windowDepths.reserve(static_cast<size_t>(windowSize));
+        for (size_t pointIndex = radius; pointIndex + radius < points.size(); ++pointIndex)
+        {
+            if (!IsValidCurveDepth(originalDepths[pointIndex], curveConfig))
+                continue;
+
+            windowDepths.clear();
+            for (size_t neighborIndex = pointIndex - radius; neighborIndex <= pointIndex + radius; ++neighborIndex)
+            {
+                const float neighborDepth = originalDepths[neighborIndex];
+                if (IsValidCurveDepth(neighborDepth, curveConfig))
+                    windowDepths.push_back(neighborDepth);
+            }
+
+            if (windowDepths.size() < 3)
+                continue;
+
+            const size_t medianIndex = windowDepths.size() / 2;
+            std::nth_element(windowDepths.begin(), windowDepths.begin() + medianIndex, windowDepths.end());
+            filteredDepths[pointIndex] = windowDepths[medianIndex];
+        }
+
+        for (size_t pointIndex = 0; pointIndex < points.size(); ++pointIndex)
+            points[pointIndex].depth = filteredDepths[pointIndex];
+    }
+
+    static void RejectIsolatedCurveDepthSpikes(std::vector<orderedEdgePoint> &points, const CurveConfigPtr &curveConfig)
+    {
+        if (points.size() < 3)
+            return;
+
+        std::vector<bool> rejected(points.size(), false);
+        for (size_t pointIndex = 1; pointIndex + 1 < points.size(); ++pointIndex)
+        {
+            const float previousDepth = points[pointIndex - 1].depth;
+            const float currentDepth = points[pointIndex].depth;
+            const float nextDepth = points[pointIndex + 1].depth;
+            if (!IsValidCurveDepth(previousDepth, curveConfig) || !IsValidCurveDepth(currentDepth, curveConfig) || !IsValidCurveDepth(nextDepth, curveConfig))
+                continue;
+
+            const bool jumpsFromPrevious = std::fabs(currentDepth - previousDepth) > CurveDepthJumpThreshold(currentDepth, previousDepth, curveConfig);
+            const bool jumpsFromNext = std::fabs(currentDepth - nextDepth) > CurveDepthJumpThreshold(currentDepth, nextDepth, curveConfig);
+            const bool neighborsAreConsistent = std::fabs(previousDepth - nextDepth) <= CurveDepthJumpThreshold(previousDepth, nextDepth, curveConfig);
+            rejected[pointIndex] = jumpsFromPrevious && jumpsFromNext && neighborsAreConsistent;
+        }
+
+        for (size_t pointIndex = 0; pointIndex < points.size(); ++pointIndex)
+        {
+            if (rejected[pointIndex])
+                points[pointIndex].depth = 0.0f;
+        }
+    }
 
     long unsigned int Frame::nNextId = 0;
     bool Frame::mbInitialComputations = true;
@@ -277,6 +357,29 @@ namespace ORB_SLAM2
                                       const size_t totalPointCount = curve.sampledPoints.size();
                                       for (size_t j = 0; j < totalPointCount; ++j)
                                           assignProperty3DEach(curve.sampledPoints[j], depth, curveConfigPtr);
+
+                                      MedianFilterCurveDepths(curve.sampledPoints, curveConfigPtr);
+                                      RejectIsolatedCurveDepthSpikes(curve.sampledPoints, curveConfigPtr);
+
+                                      // Filtering changes depth, so recompute the
+                                      // camera-frame 3D coordinates before the
+                                      // samples are copied into a MapCurve.
+                                      for (orderedEdgePoint &point : curve.sampledPoints)
+                                      {
+                                          if (IsValidCurveDepth(point.depth, curveConfigPtr))
+                                          {
+                                              point.x_3d = (point.x - cx) * invfx * point.depth;
+                                              point.y_3d = (point.y - cy) * invfy * point.depth;
+                                              point.z_3d = point.depth;
+                                          }
+                                          else
+                                          {
+                                              point.depth = 0.0f;
+                                              point.x_3d = 0.0;
+                                              point.y_3d = 0.0;
+                                              point.z_3d = 0.0;
+                                          }
+                                      }
 
                                       int validPointCount = 0;
                                       for (size_t j = 0; j < totalPointCount; ++j)

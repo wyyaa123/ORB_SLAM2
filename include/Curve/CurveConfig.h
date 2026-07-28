@@ -21,6 +21,21 @@ namespace ORB_SLAM2
         float validRatio;
         int BezierFitter;
 
+        // Curve depth denoising parameters.
+        int depthMedianWindow;
+        float maxNeighborDepthJump;
+        float maxNeighborDepthJumpRatio;
+        int minimumExtensionSamples;
+        float fusionMaxPixelDistance;
+        float fusionMax3DDistance;
+        float extensionMaxPixelGap;
+        float extensionMax3DGap;
+        float minimumJoinDirectionCosine;
+        float geometrySmoothingWeight;
+        int maximumFusionWeight;
+        float mapFusionMinimum3DCoverage;
+        float mapFusionMaximumP90Distance;
+
         // Curve association parameters.
         float matchSearchRadius;
         int minCandidateHits;

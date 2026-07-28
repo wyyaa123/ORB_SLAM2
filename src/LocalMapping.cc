@@ -21,6 +21,7 @@
 #include "LocalMapping.h"
 #include "LoopClosing.h"
 #include "ORBmatcher.h"
+#include "Curve/CurveMatcher.h"
 #include "Optimizer.h"
 #include <unistd.h>
 
@@ -74,7 +75,10 @@ namespace ORB_SLAM2
                 if (!CheckNewKeyFrames())
                 {
                     // Find more matches in neighbor keyframes and fuse point duplications
-                    SearchInNeighbors();
+                    if (mCurveConfig->enabled)
+                        SearchInNeighborsWithCurves();
+                    else
+                        SearchInNeighbors();
                 }
 
                 mbAbortBA = false;
@@ -207,6 +211,7 @@ namespace ORB_SLAM2
         }
 
         const vector<MapCurve *> vpMapCurveMatches = mpCurrentKeyFrame->GetMapCurveMatches();
+        set<MapCurve *> recentAddedMapCurves;
 
         for (size_t i = 0; i < vpMapCurveMatches.size(); i++)
         {
@@ -219,7 +224,7 @@ namespace ORB_SLAM2
                     {
                         pMC->AddObservation(mpCurrentKeyFrame, i);
                     }
-                    else
+                    else if (pMC->mnFirstKFid == static_cast<long int>(mpCurrentKeyFrame->mnId) && recentAddedMapCurves.insert(pMC).second)
                     {
                         mlpRecentAddedMapCurves.push_back(pMC);
                     }
@@ -283,17 +288,17 @@ namespace ORB_SLAM2
             {
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (pMC->GetFoundRatio() < 0.25f)
+            else if (pMC->GetFoundRatio() < 0.67f)
             {
                 pMC->SetBadFlag();
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 2 && pMC->Observations() <= 2)
+            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 5 && pMC->Observations() <= 4)
             {
                 pMC->SetBadFlag();
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 3)
+            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 5)
                 lit = mlpRecentAddedMapCurves.erase(lit);
             else
                 lit++;
@@ -549,65 +554,100 @@ namespace ORB_SLAM2
     void LocalMapping::SearchInNeighbors()
     {
         // Retrieve neighbor keyframes
+        // Step 1：获得当前关键帧在共视图中权重排名前nn的邻接关键帧
+        // 开始之前先定义几个概念
+        // 当前关键帧的邻接关键帧，称为一级相邻关键帧，也就是邻居
+        // 与一级相邻关键帧相邻的关键帧，称为二级相邻关键帧，也就是邻居的邻居
+
+        // 单目情况要20个邻接关键帧，双目或者RGBD则要10个
         int nn = 10;
         if (mbMonocular)
             nn = 20;
+
+        // 和当前关键帧相邻的关键帧，也就是一级相邻关键帧
         const vector<KeyFrame *> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
+
+        // Step 2：存储一级相邻关键帧及其二级相邻关键帧
         vector<KeyFrame *> vpTargetKFs;
+        // 开始对所有候选的一级关键帧展开遍历：
         for (vector<KeyFrame *>::const_iterator vit = vpNeighKFs.begin(), vend = vpNeighKFs.end(); vit != vend; vit++)
         {
             KeyFrame *pKFi = *vit;
+            // 没有和当前帧进行过融合的操作
             if (pKFi->isBad() || pKFi->mnFuseTargetForKF == mpCurrentKeyFrame->mnId)
                 continue;
+            // 加入一级相邻关键帧
             vpTargetKFs.push_back(pKFi);
+            // 标记已经加入
             pKFi->mnFuseTargetForKF = mpCurrentKeyFrame->mnId;
 
             // Extend to some second neighbors
+            // 以一级相邻关键帧的共视关系最好的5个相邻关键帧 作为二级相邻关键帧
             const vector<KeyFrame *> vpSecondNeighKFs = pKFi->GetBestCovisibilityKeyFrames(5);
+            // 遍历得到的二级相邻关键帧
             for (vector<KeyFrame *>::const_iterator vit2 = vpSecondNeighKFs.begin(), vend2 = vpSecondNeighKFs.end(); vit2 != vend2; vit2++)
             {
                 KeyFrame *pKFi2 = *vit2;
+                // 当然这个二级相邻关键帧要求没有和当前关键帧发生融合,并且这个二级相邻关键帧也不是当前关键帧
                 if (pKFi2->isBad() || pKFi2->mnFuseTargetForKF == mpCurrentKeyFrame->mnId || pKFi2->mnId == mpCurrentKeyFrame->mnId)
                     continue;
+                // 存入二级相邻关键帧
                 vpTargetKFs.push_back(pKFi2);
+                pKFi2->mnFuseTargetForKF = mpCurrentKeyFrame->mnId;
             }
         }
 
         // Search matches by projection from current KF in target KFs
+        // 使用默认参数, 最优和次优比例0.6,匹配时检查特征点的旋转
         ORBmatcher matcher;
+
+        // Step 3：将当前帧的地图点分别投影到两级相邻关键帧，寻找匹配点对应的地图点进行融合，称为正向投影融合
         vector<MapPoint *> vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
         for (vector<KeyFrame *>::iterator vit = vpTargetKFs.begin(), vend = vpTargetKFs.end(); vit != vend; vit++)
         {
             KeyFrame *pKFi = *vit;
 
+            // 将地图点投影到关键帧中进行匹配和融合；融合策略如下
+            // 1.如果地图点能匹配关键帧的特征点，并且该点有对应的地图点，那么选择观测数目多的替换两个地图点
+            // 2.如果地图点能匹配关键帧的特征点，并且该点没有对应的地图点，那么为该点添加该投影地图点
+            // 注意这个时候对地图点融合的操作是立即生效的
             matcher.Fuse(pKFi, vpMapPointMatches);
         }
 
         // Search matches by projection from target KFs in current KF
+        // Step 4：将两级相邻关键帧地图点分别投影到当前关键帧，寻找匹配点对应的地图点进行融合，称为反向投影融合
+        // 用于进行存储要融合的一级邻接和二级邻接关键帧所有MapPoints的集合
         vector<MapPoint *> vpFuseCandidates;
         vpFuseCandidates.reserve(vpTargetKFs.size() * vpMapPointMatches.size());
 
+        //  Step 4.1：遍历每一个一级邻接和二级邻接关键帧，收集他们的地图点存储到 vpFuseCandidates
         for (vector<KeyFrame *>::iterator vitKF = vpTargetKFs.begin(), vendKF = vpTargetKFs.end(); vitKF != vendKF; vitKF++)
         {
             KeyFrame *pKFi = *vitKF;
-
             vector<MapPoint *> vpMapPointsKFi = pKFi->GetMapPointMatches();
 
+            // 遍历当前一级邻接和二级邻接关键帧中所有的MapPoints,找出需要进行融合的并且加入到集合中
             for (vector<MapPoint *>::iterator vitMP = vpMapPointsKFi.begin(), vendMP = vpMapPointsKFi.end(); vitMP != vendMP; vitMP++)
             {
                 MapPoint *pMP = *vitMP;
                 if (!pMP)
                     continue;
+
+                // 如果地图点是坏点，或者已经加进集合vpFuseCandidates，跳过
                 if (pMP->isBad() || pMP->mnFuseCandidateForKF == mpCurrentKeyFrame->mnId)
                     continue;
+
+                // 加入集合，并标记已经加入
                 pMP->mnFuseCandidateForKF = mpCurrentKeyFrame->mnId;
                 vpFuseCandidates.push_back(pMP);
             }
         }
-
+        // Step 4.2：进行地图点投影融合,和正向融合操作是完全相同的
+        // 不同的是正向操作是"每个关键帧和当前关键帧的地图点进行融合",而这里的是"当前关键帧和所有邻接关键帧的地图点进行融合"
         matcher.Fuse(mpCurrentKeyFrame, vpFuseCandidates);
 
         // Update points
+        // Step 5：更新当前帧地图点的描述子、深度、平均观测方向等属性
         vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
         for (size_t i = 0, iend = vpMapPointMatches.size(); i < iend; i++)
         {
@@ -616,13 +656,17 @@ namespace ORB_SLAM2
             {
                 if (!pMP->isBad())
                 {
+                    // 在所有找到pMP的关键帧中，获得最佳的描述子
                     pMP->ComputeDistinctiveDescriptors();
+
+                    // 更新平均观测方向和观测距离
                     pMP->UpdateNormalAndDepth();
                 }
             }
         }
 
         // Update connections in covisibility graph
+        // Step 6：更新当前帧与其它帧的共视连接关系
         mpCurrentKeyFrame->UpdateConnections();
     }
 
@@ -630,7 +674,7 @@ namespace ORB_SLAM2
     {
         // Retrieve neighbor keyframes
         int nn = 10;
-        
+
         const vector<KeyFrame *> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
         vector<KeyFrame *> vpTargetKFs;
         for (vector<KeyFrame *>::const_iterator vit = vpNeighKFs.begin(), vend = vpNeighKFs.end(); vit != vend; vit++)
@@ -649,22 +693,29 @@ namespace ORB_SLAM2
                 if (pKFi2->isBad() || pKFi2->mnFuseTargetForKF == mpCurrentKeyFrame->mnId || pKFi2->mnId == mpCurrentKeyFrame->mnId)
                     continue;
                 vpTargetKFs.push_back(pKFi2);
+                pKFi2->mnFuseTargetForKF = mpCurrentKeyFrame->mnId;
             }
         }
 
         // Search matches by projection from current KF in target KFs
         ORBmatcher matcher;
+        CurveMatcher curveMatcher(mCurveConfig);
         vector<MapPoint *> vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
+        vector<MapCurve *> vpMapCurveMatches = mpCurrentKeyFrame->GetMapCurveMatches();
         for (vector<KeyFrame *>::iterator vit = vpTargetKFs.begin(), vend = vpTargetKFs.end(); vit != vend; vit++)
         {
             KeyFrame *pKFi = *vit;
 
             matcher.Fuse(pKFi, vpMapPointMatches);
+            curveMatcher.Fuse(pKFi, vpMapCurveMatches);
+            vpMapCurveMatches = mpCurrentKeyFrame->GetMapCurveMatches();
         }
 
         // Search matches by projection from target KFs in current KF
         vector<MapPoint *> vpFuseCandidates;
+        vector<MapCurve *> vpCurveFuseCandidates;
         vpFuseCandidates.reserve(vpTargetKFs.size() * vpMapPointMatches.size());
+        vpCurveFuseCandidates.reserve(vpTargetKFs.size() * vpMapCurveMatches.size());
 
         for (vector<KeyFrame *>::iterator vitKF = vpTargetKFs.begin(), vendKF = vpTargetKFs.end(); vitKF != vendKF; vitKF++)
         {
@@ -682,9 +733,23 @@ namespace ORB_SLAM2
                 pMP->mnFuseCandidateForKF = mpCurrentKeyFrame->mnId;
                 vpFuseCandidates.push_back(pMP);
             }
+
+            vector<MapCurve *> vpMapCurvesKFi = pKFi->GetMapCurveMatches();
+
+            for (vector<MapCurve *>::iterator vitMC = vpMapCurvesKFi.begin(), vendMC = vpMapCurvesKFi.end(); vitMC != vendMC; vitMC++)
+            {
+                MapCurve *pMC = *vitMC;
+                if (!pMC)
+                    continue;
+                if (pMC->isBad() || pMC->mnFuseCandidateForKF == mpCurrentKeyFrame->mnId)
+                    continue;
+                pMC->mnFuseCandidateForKF = mpCurrentKeyFrame->mnId;
+                vpCurveFuseCandidates.push_back(pMC);
+            }
         }
 
         matcher.Fuse(mpCurrentKeyFrame, vpFuseCandidates);
+        curveMatcher.Fuse(mpCurrentKeyFrame, vpCurveFuseCandidates);
 
         // Update points
         vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();

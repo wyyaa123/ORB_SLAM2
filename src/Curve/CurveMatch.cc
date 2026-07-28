@@ -4,6 +4,7 @@
 #include "Curve/Hungarian.h"
 #include "Curve/MapCurve.h"
 #include "Frame.h"
+#include "KeyFrame.h"
 
 #include <algorithm>
 #include <cmath>
@@ -146,6 +147,27 @@ namespace ORB_SLAM2
         return std::isfinite(imagePoint.x) && std::isfinite(imagePoint.y);
     }
 
+    bool CurveMatcher::ProjectWorldPoint(const cv::Point3d &worldPoint, KeyFrame *pKF, cv::Point2f &imagePoint)
+    {
+        if (!pKF)
+            return false;
+        const cv::Mat Tcw = pKF->GetPose();
+        if (Tcw.empty())
+            return false;
+        const float worldX = static_cast<float>(worldPoint.x);
+        const float worldY = static_cast<float>(worldPoint.y);
+        const float worldZ = static_cast<float>(worldPoint.z);
+        const float cameraX = Tcw.at<float>(0, 0) * worldX + Tcw.at<float>(0, 1) * worldY + Tcw.at<float>(0, 2) * worldZ + Tcw.at<float>(0, 3);
+        const float cameraY = Tcw.at<float>(1, 0) * worldX + Tcw.at<float>(1, 1) * worldY + Tcw.at<float>(1, 2) * worldZ + Tcw.at<float>(1, 3);
+        const float cameraZ = Tcw.at<float>(2, 0) * worldX + Tcw.at<float>(2, 1) * worldY + Tcw.at<float>(2, 2) * worldZ + Tcw.at<float>(2, 3);
+        if (!std::isfinite(cameraX) || !std::isfinite(cameraY) || !std::isfinite(cameraZ) || cameraZ <= 0.0f)
+            return false;
+        const float inverseZ = 1.0f / cameraZ;
+        imagePoint.x = pKF->fx * cameraX * inverseZ + pKF->cx;
+        imagePoint.y = pKF->fy * cameraY * inverseZ + pKF->cy;
+        return std::isfinite(imagePoint.x) && std::isfinite(imagePoint.y);
+    }
+
     void CurveMatcher::AppendResampledSegment(const cv::Point2f &first, const cv::Point2f &second, std::vector<cv::Point2f> &samples)
     {
         const float length = cv::norm(second - first);
@@ -190,6 +212,33 @@ namespace ORB_SLAM2
             hasPreviousPoint = true;
         }
 
+        return projected.samples.size() >= 2;
+    }
+
+    bool CurveMatcher::ProjectMapCurve(MapCurve *pMapCurve, KeyFrame *pKF, const float margin, ProjectedMapCurve &projected)
+    {
+        projected = ProjectedMapCurve();
+        if (!pMapCurve || !pKF || pMapCurve->isBad() || pKF->isBad())
+            return false;
+        projected.pMapCurve = pMapCurve;
+        const std::vector<cv::Point3d> worldPoints = pMapCurve->GetCurvePoints();
+        bool hasPreviousPoint = false;
+        cv::Point2f previousPoint;
+        for (const cv::Point3d &worldPoint : worldPoints)
+        {
+            cv::Point2f currentPoint;
+            if (!ProjectWorldPoint(worldPoint, pKF, currentPoint) || currentPoint.x < pKF->mnMinX - margin || currentPoint.x > pKF->mnMaxX + margin || currentPoint.y < pKF->mnMinY - margin || currentPoint.y > pKF->mnMaxY + margin)
+            {
+                hasPreviousPoint = false;
+                continue;
+            }
+            if (!hasPreviousPoint)
+                projected.samples.push_back(currentPoint);
+            else
+                AppendResampledSegment(previousPoint, currentPoint, projected.samples);
+            previousPoint = currentPoint;
+            hasPreviousPoint = true;
+        }
         return projected.samples.size() >= 2;
     }
 
@@ -541,20 +590,13 @@ namespace ORB_SLAM2
     {
         currentFrame.mvCurveSampleCorrespondences.clear();
         currentFrame.mvCurveMatchDiagnostics.clear();
-        if (!mCurveConfig || mapCurves.empty())
-        {
+        if (mapCurves.empty())
             return 0;
-        }
 
-        if (currentFrame.mvpMapCurves.size() != currentFrame.mvBezierCurves.size())
-        {
-            currentFrame.mvpMapCurves.assign(currentFrame.mvBezierCurves.size(), static_cast<MapCurve *>(NULL));
-        }
-
-        const float searchRadius = std::max(1.0f, mCurveConfig->matchSearchRadius);
-        const int minimumHits = std::max(1, mCurveConfig->minCandidateHits);
-        const float minimumCoverage = std::max(0.0f, std::min(1.0f, mCurveConfig->minCandidateCoverage));
-        const double unmatchedCost = std::max(0.1f, mCurveConfig->unmatchedCost);
+        const float searchRadius = mCurveConfig->matchSearchRadius;
+        const int minimumHits = mCurveConfig->minCandidateHits;
+        const float minimumCoverage = mCurveConfig->minCandidateCoverage;
+        const double unmatchedCost = mCurveConfig->unmatchedCost;
 
         std::unordered_map<MapCurve *, size_t> diagnosticIndexByMapCurve;
         for (MapCurve *pMapCurve : mapCurves)
@@ -983,5 +1025,171 @@ namespace ORB_SLAM2
         BuildFixedSampleCorrespondences(currentFrame);
         finalizeDiagnostics();
         return matchCount;
+    }
+
+    int CurveMatcher::Fuse(KeyFrame *pKF, const std::vector<MapCurve *> &vpMapCurves)
+    {
+        if (!mCurveConfig || !pKF || pKF->isBad() || pKF->mvBezierCurves.empty() || vpMapCurves.empty())
+            return 0;
+
+        const float searchRadius = std::max(1.0f, mCurveConfig->matchSearchRadius);
+        const float searchRadiusSquared = searchRadius * searchRadius;
+        const int minimumHits = std::max(1, mCurveConfig->minCandidateHits);
+        const float minimumCoverage = std::max(0.0f, std::min(1.0f, mCurveConfig->minCandidateCoverage));
+        const double unmatchedCost = std::max(0.1f, mCurveConfig->unmatchedCost);
+
+        std::vector<std::vector<cv::Point2f>> observedCurves(pKF->mvBezierCurves.size());
+        std::vector<size_t> rowToCurveIndex;
+        for (size_t curveIndex = 0; curveIndex < pKF->mvBezierCurves.size(); ++curveIndex)
+        {
+            const std::vector<orderedEdgePoint> &sourceSamples = pKF->mvBezierCurves[curveIndex].sampledPoints;
+            std::vector<cv::Point2f> &targetSamples = observedCurves[curveIndex];
+            targetSamples.reserve(sourceSamples.size());
+            for (const orderedEdgePoint &point : sourceSamples)
+                targetSamples.push_back(ToPoint2f(point));
+            if (targetSamples.size() >= 2)
+                rowToCurveIndex.push_back(curveIndex);
+        }
+        if (rowToCurveIndex.empty())
+            return 0;
+
+        std::vector<ProjectedMapCurve> projectedCurves;
+        std::unordered_set<MapCurve *> processedMapCurves;
+        projectedCurves.reserve(vpMapCurves.size());
+        for (MapCurve *pMapCurve : vpMapCurves)
+        {
+            if (!pMapCurve || !processedMapCurves.insert(pMapCurve).second || pMapCurve->isBad())
+                continue;
+            ProjectedMapCurve projected;
+            if (ProjectMapCurve(pMapCurve, pKF, searchRadius, projected))
+                projectedCurves.push_back(std::move(projected));
+        }
+        if (projectedCurves.empty())
+            return 0;
+
+        const size_t rowCount = rowToCurveIndex.size();
+        const size_t mapCount = projectedCurves.size();
+        std::vector<std::vector<CurveSimilarity>> similarities(rowCount, std::vector<CurveSimilarity>(mapCount));
+        std::vector<std::vector<double>> costMatrix(rowCount, std::vector<double>(mapCount + rowCount, kInvalidCost));
+
+        for (size_t row = 0; row < rowCount; ++row)
+        {
+            const size_t curveIndex = rowToCurveIndex[row];
+            const std::vector<cv::Point2f> &observedCurve = observedCurves[curveIndex];
+            for (size_t mapIndex = 0; mapIndex < mapCount; ++mapIndex)
+            {
+                const std::vector<cv::Point2f> &mapSamples = projectedCurves[mapIndex].samples;
+                const size_t shorterSampleCount = std::min(mapSamples.size(), observedCurve.size());
+                if (shorterSampleCount < 2)
+                    continue;
+
+                size_t matchedMapSamples = 0;
+                std::unordered_set<size_t> matchedObservedSamples;
+                for (const cv::Point2f &mapPoint : mapSamples)
+                {
+                    size_t bestObservedIndex = observedCurve.size();
+                    float bestDistanceSquared = searchRadiusSquared;
+                    for (size_t observedIndex = 0; observedIndex < observedCurve.size(); ++observedIndex)
+                    {
+                        const cv::Point2f difference = observedCurve[observedIndex] - mapPoint;
+                        const float distanceSquared = difference.dot(difference);
+                        if (distanceSquared <= bestDistanceSquared)
+                        {
+                            bestDistanceSquared = distanceSquared;
+                            bestObservedIndex = observedIndex;
+                        }
+                    }
+                    if (bestObservedIndex < observedCurve.size())
+                    {
+                        ++matchedMapSamples;
+                        matchedObservedSamples.insert(bestObservedIndex);
+                    }
+                }
+
+                const size_t uniqueHitCount = std::min(matchedMapSamples, matchedObservedSamples.size());
+                const size_t requiredHitCount = std::min(shorterSampleCount, static_cast<size_t>(minimumHits));
+                const float coverage = static_cast<float>(uniqueHitCount) / static_cast<float>(shorterSampleCount);
+                if (uniqueHitCount < requiredHitCount || coverage < minimumCoverage)
+                    continue;
+
+                CurveSimilarity similarity = ComputeCurveSimilarity(projectedCurves[mapIndex], observedCurve, searchRadius);
+                similarities[row][mapIndex] = similarity;
+                if (similarity.valid && similarity.cost < unmatchedCost)
+                    costMatrix[row][mapIndex] = similarity.cost;
+            }
+            costMatrix[row][mapCount + row] = unmatchedCost;
+        }
+
+        HungarianAlgorithm hungarian;
+        std::vector<int> assignment;
+        hungarian.Solve(costMatrix, assignment);
+
+        int fusedCount = 0;
+        for (size_t row = 0; row < rowCount; ++row)
+        {
+            if (row >= assignment.size() || assignment[row] < 0 || static_cast<size_t>(assignment[row]) >= mapCount)
+                continue;
+            const size_t mapIndex = static_cast<size_t>(assignment[row]);
+            const CurveSimilarity &chosen = similarities[row][mapIndex];
+            if (!chosen.valid || chosen.cost >= unmatchedCost)
+                continue;
+
+            double alternativeCost = kInvalidCost;
+            for (size_t alternativeMapIndex = 0; alternativeMapIndex < mapCount; ++alternativeMapIndex)
+            {
+                if (alternativeMapIndex == mapIndex)
+                    continue;
+                const CurveSimilarity &alternative = similarities[row][alternativeMapIndex];
+                if (alternative.valid && alternative.cost < alternativeCost)
+                    alternativeCost = alternative.cost;
+            }
+            if (alternativeCost < kInvalidCost && chosen.cost > 0.90 * alternativeCost)
+                continue;
+
+            const size_t curveIndex = rowToCurveIndex[row];
+            MapCurve *pCandidate = projectedCurves[mapIndex].pMapCurve;
+            if (!pCandidate || pCandidate->isBad())
+                continue;
+
+            MapCurve *pExisting = pKF->GetMapCurve(curveIndex);
+            if (pExisting && pExisting->isBad())
+            {
+                pKF->EraseMapCurveMatch(curveIndex);
+                pExisting = static_cast<MapCurve *>(NULL);
+            }
+
+            if (!pExisting)
+            {
+                pKF->AddMapCurve(pCandidate, curveIndex);
+                pCandidate->AddObservation(pKF, curveIndex);
+                ++fusedCount;
+                continue;
+            }
+
+            if (pExisting == pCandidate)
+            {
+                pCandidate->AddObservation(pKF, curveIndex);
+                continue;
+            }
+
+            MapCurve *pSurvivor = pExisting;
+            MapCurve *pDiscarded = pCandidate;
+            const int existingObservations = pExisting->Observations();
+            const int candidateObservations = pCandidate->Observations();
+            const unsigned long existingWeight = pExisting->GetTotalFusionWeight();
+            const unsigned long candidateWeight = pCandidate->GetTotalFusionWeight();
+            if (candidateObservations > existingObservations || (candidateObservations == existingObservations && candidateWeight > existingWeight) || (candidateObservations == existingObservations && candidateWeight == existingWeight && pCandidate->mnId < pExisting->mnId))
+            {
+                pSurvivor = pCandidate;
+                pDiscarded = pExisting;
+            }
+
+            if (pDiscarded->Replace(pSurvivor, mCurveConfig))
+                ++fusedCount;
+        }
+
+        if (fusedCount > 0)
+            pKF->UpdateConnections();
+        return fusedCount;
     }
 } // namespace ORB_SLAM2
