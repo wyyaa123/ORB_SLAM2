@@ -9,7 +9,7 @@ namespace ORB_SLAM2
     long unsigned int MapCurve::nNextId = 0;
     std::mutex MapCurve::mGlobalMutex;
 
-    MapCurve::MapCurve(std::vector<cv::Point3d> curvePoints, KeyFrame *pReferenceKF, Map *pMap) : mnFirstKFid(pReferenceKF->mnId), mnFirstFrame(pReferenceKF->mnFrameId), nObs(0), mnLastFrameSeen(0), mpRefKF(pReferenceKF), mnVisible(1), mnFound(1), mbBad(false), mpReplaced(NULL), mpMap(pMap)
+    MapCurve::MapCurve(std::vector<cv::Point3d> curvePoints, KeyFrame *pReferenceKF, Map *pMap) : mnFirstKFid(pReferenceKF->mnId), mnFirstFrame(pReferenceKF->mnFrameId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mnLastFrameSeen(0), mpRefKF(pReferenceKF), mnVisible(1), mnFound(1), mbBad(false), mpReplaced(NULL), mpMap(pMap)
     {
         mCurvePoints = curvePoints;
 
@@ -29,11 +29,52 @@ namespace ORB_SLAM2
         nObs++;
     }
 
+    void MapCurve::EraseObservation(KeyFrame *pKF)
+    {
+        bool bBad = false;
+        {
+            unique_lock<mutex> lock(mMutexFeatures);
+            if (mObservations.count(pKF))
+            {
+                nObs--;
+
+                mObservations.erase(pKF);
+
+                if (mpRefKF == pKF)
+                    mpRefKF = mObservations.begin()->first;
+
+                if (nObs < 2)
+                    bBad = true;
+            }
+        }
+
+        if (bBad)
+            SetBadFlag();
+    }
+
     MapCurve *MapCurve::GetReplaced()
     {
         unique_lock<mutex> lock1(mMutexFeatures);
         unique_lock<mutex> lock2(mMutexPos);
         return mpReplaced;
+    }
+
+    void MapCurve::IncreaseVisible(int n)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        mnVisible += n;
+    }
+
+    void MapCurve::IncreaseFound(int n)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        mnFound += n;
+    }
+
+    float MapCurve::GetFoundRatio()
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        return static_cast<float>(mnFound) / mnVisible;
     }
 
     std::vector<cv::Point3d> MapCurve::GetCurvePoints()
@@ -50,12 +91,12 @@ namespace ORB_SLAM2
         const double cameraX = frame.mTcw.at<float>(0, 0) * worldPoint.x + frame.mTcw.at<float>(0, 1) * worldPoint.y + frame.mTcw.at<float>(0, 2) * worldPoint.z + frame.mTcw.at<float>(0, 3);
         const double cameraY = frame.mTcw.at<float>(1, 0) * worldPoint.x + frame.mTcw.at<float>(1, 1) * worldPoint.y + frame.mTcw.at<float>(1, 2) * worldPoint.z + frame.mTcw.at<float>(1, 3);
         const double cameraZ = frame.mTcw.at<float>(2, 0) * worldPoint.x + frame.mTcw.at<float>(2, 1) * worldPoint.y + frame.mTcw.at<float>(2, 2) * worldPoint.z + frame.mTcw.at<float>(2, 3);
-        if (!std::isfinite(cameraX) || !std::isfinite(cameraY) || !std::isfinite(cameraZ) || cameraZ <= 0.0)
+        if (cameraZ <= 0.0)
             return false;
 
         imagePoint.x = frame.fx * cameraX / cameraZ + frame.cx;
         imagePoint.y = frame.fy * cameraY / cameraZ + frame.cy;
-        return std::isfinite(imagePoint.x) && std::isfinite(imagePoint.y);
+        return imagePoint.x >= frame.mnMinX && imagePoint.x <= frame.mnMaxX && imagePoint.y >= frame.mnMinY && imagePoint.y <= frame.mnMaxY;
     }
 
     size_t MapCurve::FindNearestPointIndex(const cv::Point2d &queryPoint, const std::vector<cv::Point2d> &points)
@@ -159,10 +200,41 @@ namespace ORB_SLAM2
         return prefixCount + suffixCount;
     }
 
+    std::map<KeyFrame *, size_t> MapCurve::GetObservations()
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        return mObservations;
+    }
+
     int MapCurve::Observations()
     {
         unique_lock<mutex> lock(mMutexFeatures);
         return nObs;
+    }
+
+    bool ORB_SLAM2::MapCurve::IsInKeyFrame(KeyFrame *pKF)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        return mObservations.count(pKF);
+    }
+
+    void ORB_SLAM2::MapCurve::SetBadFlag()
+    {
+        map<KeyFrame *, size_t> observations;
+        {
+            unique_lock<mutex> lock1(mMutexFeatures);
+            unique_lock<mutex> lock2(mMutexPos);
+            mbBad = true;
+            observations = mObservations;
+            mObservations.clear();
+        }
+        for (map<KeyFrame *, size_t>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
+        {
+            KeyFrame *pKF = mit->first;
+            pKF->EraseMapCurveMatch(mit->second);
+        }
+
+        mpMap->EraseMapCurve(this);
     }
 
     bool MapCurve::isBad()

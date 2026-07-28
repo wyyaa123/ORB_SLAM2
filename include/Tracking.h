@@ -149,11 +149,16 @@ namespace ORB_SLAM2
         bool Relocalization();
 
         void UpdateLocalMap();
+        void UpdateLocalMapWithCurves();
         void UpdateLocalPoints();
+        void UpdateLocalCurves();
         void UpdateLocalKeyFrames();
+        void UpdateLocalKeyFramesWithCurves();
 
         bool TrackLocalMap();
+        bool TrackLocalMapWithCurves();
         void SearchLocalPoints();
+        void SearchLocalCurves();
 
         bool NeedNewKeyFrame();
         bool NeedNewKeyFrameWithCurves();

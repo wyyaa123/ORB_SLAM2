@@ -58,10 +58,15 @@ namespace ORB_SLAM2
             if (CheckNewKeyFrames())
             {
                 // BoW conversion and insertion in Map
-                ProcessNewKeyFrame();
+                if (mCurveConfig->enabled)
+                    ProcessNewKeyFrameWithCurves();
+                else
+                    ProcessNewKeyFrame();
 
                 // Check recent MapPoints
                 MapPointCulling();
+                if (mCurveConfig->enabled)
+                    MapCurveCulling();
 
                 // Triangulate new MapPoints
                 CreateNewMapPoints();
@@ -166,6 +171,69 @@ namespace ORB_SLAM2
         mpMap->AddKeyFrame(mpCurrentKeyFrame);
     }
 
+    void LocalMapping::ProcessNewKeyFrameWithCurves()
+    {
+        {
+            unique_lock<mutex> lock(mMutexNewKFs);
+            mpCurrentKeyFrame = mlNewKeyFrames.front();
+            mlNewKeyFrames.pop_front();
+        }
+
+        // Compute Bags of Words structures
+        mpCurrentKeyFrame->ComputeBoW();
+
+        // Associate MapPoints to the new keyframe and update normal and descriptor
+        const vector<MapPoint *> vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
+
+        for (size_t i = 0; i < vpMapPointMatches.size(); i++)
+        {
+            MapPoint *pMP = vpMapPointMatches[i];
+            if (pMP)
+            {
+                if (!pMP->isBad())
+                {
+                    if (!pMP->IsInKeyFrame(mpCurrentKeyFrame))
+                    {
+                        pMP->AddObservation(mpCurrentKeyFrame, i);
+                        pMP->UpdateNormalAndDepth();
+                        pMP->ComputeDistinctiveDescriptors();
+                    }
+                    else // this can only happen for new stereo points inserted by the Tracking
+                    {
+                        mlpRecentAddedMapPoints.push_back(pMP);
+                    }
+                }
+            }
+        }
+
+        const vector<MapCurve *> vpMapCurveMatches = mpCurrentKeyFrame->GetMapCurveMatches();
+
+        for (size_t i = 0; i < vpMapCurveMatches.size(); i++)
+        {
+            MapCurve *pMC = vpMapCurveMatches[i];
+            if (pMC)
+            {
+                if (!pMC->isBad())
+                {
+                    if (!pMC->IsInKeyFrame(mpCurrentKeyFrame))
+                    {
+                        pMC->AddObservation(mpCurrentKeyFrame, i);
+                    }
+                    else
+                    {
+                        mlpRecentAddedMapCurves.push_back(pMC);
+                    }
+                }
+            }
+        }
+
+        // Update links in the Covisibility Graph
+        mpCurrentKeyFrame->UpdateConnections();
+
+        // Insert Keyframe in Map
+        mpMap->AddKeyFrame(mpCurrentKeyFrame);
+    }
+
     void LocalMapping::MapPointCulling()
     {
         // Check Recent Added MapPoints
@@ -198,6 +266,35 @@ namespace ORB_SLAM2
             }
             else if (((int)nCurrentKFid - (int)pMP->mnFirstKFid) >= 3)
                 lit = mlpRecentAddedMapPoints.erase(lit);
+            else
+                lit++;
+        }
+    }
+
+    void LocalMapping::MapCurveCulling()
+    {
+        list<MapCurve *>::iterator lit = mlpRecentAddedMapCurves.begin();
+        const unsigned long int nCurrentKFid = mpCurrentKeyFrame->mnId;
+
+        while (lit != mlpRecentAddedMapCurves.end())
+        {
+            MapCurve *pMC = *lit;
+            if (pMC->isBad())
+            {
+                lit = mlpRecentAddedMapCurves.erase(lit);
+            }
+            else if (pMC->GetFoundRatio() < 0.25f)
+            {
+                pMC->SetBadFlag();
+                lit = mlpRecentAddedMapCurves.erase(lit);
+            }
+            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 2 && pMC->Observations() <= 2)
+            {
+                pMC->SetBadFlag();
+                lit = mlpRecentAddedMapCurves.erase(lit);
+            }
+            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 3)
+                lit = mlpRecentAddedMapCurves.erase(lit);
             else
                 lit++;
         }
@@ -455,6 +552,85 @@ namespace ORB_SLAM2
         int nn = 10;
         if (mbMonocular)
             nn = 20;
+        const vector<KeyFrame *> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
+        vector<KeyFrame *> vpTargetKFs;
+        for (vector<KeyFrame *>::const_iterator vit = vpNeighKFs.begin(), vend = vpNeighKFs.end(); vit != vend; vit++)
+        {
+            KeyFrame *pKFi = *vit;
+            if (pKFi->isBad() || pKFi->mnFuseTargetForKF == mpCurrentKeyFrame->mnId)
+                continue;
+            vpTargetKFs.push_back(pKFi);
+            pKFi->mnFuseTargetForKF = mpCurrentKeyFrame->mnId;
+
+            // Extend to some second neighbors
+            const vector<KeyFrame *> vpSecondNeighKFs = pKFi->GetBestCovisibilityKeyFrames(5);
+            for (vector<KeyFrame *>::const_iterator vit2 = vpSecondNeighKFs.begin(), vend2 = vpSecondNeighKFs.end(); vit2 != vend2; vit2++)
+            {
+                KeyFrame *pKFi2 = *vit2;
+                if (pKFi2->isBad() || pKFi2->mnFuseTargetForKF == mpCurrentKeyFrame->mnId || pKFi2->mnId == mpCurrentKeyFrame->mnId)
+                    continue;
+                vpTargetKFs.push_back(pKFi2);
+            }
+        }
+
+        // Search matches by projection from current KF in target KFs
+        ORBmatcher matcher;
+        vector<MapPoint *> vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
+        for (vector<KeyFrame *>::iterator vit = vpTargetKFs.begin(), vend = vpTargetKFs.end(); vit != vend; vit++)
+        {
+            KeyFrame *pKFi = *vit;
+
+            matcher.Fuse(pKFi, vpMapPointMatches);
+        }
+
+        // Search matches by projection from target KFs in current KF
+        vector<MapPoint *> vpFuseCandidates;
+        vpFuseCandidates.reserve(vpTargetKFs.size() * vpMapPointMatches.size());
+
+        for (vector<KeyFrame *>::iterator vitKF = vpTargetKFs.begin(), vendKF = vpTargetKFs.end(); vitKF != vendKF; vitKF++)
+        {
+            KeyFrame *pKFi = *vitKF;
+
+            vector<MapPoint *> vpMapPointsKFi = pKFi->GetMapPointMatches();
+
+            for (vector<MapPoint *>::iterator vitMP = vpMapPointsKFi.begin(), vendMP = vpMapPointsKFi.end(); vitMP != vendMP; vitMP++)
+            {
+                MapPoint *pMP = *vitMP;
+                if (!pMP)
+                    continue;
+                if (pMP->isBad() || pMP->mnFuseCandidateForKF == mpCurrentKeyFrame->mnId)
+                    continue;
+                pMP->mnFuseCandidateForKF = mpCurrentKeyFrame->mnId;
+                vpFuseCandidates.push_back(pMP);
+            }
+        }
+
+        matcher.Fuse(mpCurrentKeyFrame, vpFuseCandidates);
+
+        // Update points
+        vpMapPointMatches = mpCurrentKeyFrame->GetMapPointMatches();
+        for (size_t i = 0, iend = vpMapPointMatches.size(); i < iend; i++)
+        {
+            MapPoint *pMP = vpMapPointMatches[i];
+            if (pMP)
+            {
+                if (!pMP->isBad())
+                {
+                    pMP->ComputeDistinctiveDescriptors();
+                    pMP->UpdateNormalAndDepth();
+                }
+            }
+        }
+
+        // Update connections in covisibility graph
+        mpCurrentKeyFrame->UpdateConnections();
+    }
+
+    void LocalMapping::SearchInNeighborsWithCurves()
+    {
+        // Retrieve neighbor keyframes
+        int nn = 10;
+        
         const vector<KeyFrame *> vpNeighKFs = mpCurrentKeyFrame->GetBestCovisibilityKeyFrames(nn);
         vector<KeyFrame *> vpTargetKFs;
         for (vector<KeyFrame *>::const_iterator vit = vpNeighKFs.begin(), vend = vpNeighKFs.end(); vit != vend; vit++)

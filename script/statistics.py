@@ -1,7 +1,7 @@
 from pathlib import Path
 
 # 你的数据集根目录（包含 rgb 文件夹）
-dataset_dir = Path("datasets/Real/D435I/ot")
+dataset_dir = Path("datasets/Real/D435I/wallpainting")
 img_dir = dataset_dir / "depth"  # 这里放 png
 out_path = dataset_dir / "depth.txt"
 

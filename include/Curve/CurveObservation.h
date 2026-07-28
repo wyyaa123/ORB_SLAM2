@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <opencv2/core/core.hpp>
+#include <string>
 
 namespace ORB_SLAM2
 {
@@ -20,6 +21,16 @@ namespace ORB_SLAM2
         double observedParameter;
         double initialDistance;
         double normalizedWeight;
+    };
+
+    struct CurveMatchDiagnostic
+    {
+        CurveMatchDiagnostic();
+
+        MapCurve *pMapCurve;
+        bool matched;
+        std::string failureType;
+        std::string failureDetail;
     };
 }
 

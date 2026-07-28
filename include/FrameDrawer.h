@@ -66,6 +66,7 @@ namespace ORB_SLAM2
         vector<BezierCurve> mvCurveAssociationCurves;
         vector<MapCurve *> mvpCurveAssociationMatches;
         vector<MapCurve *> mvpCurveAssociationCandidates;
+        vector<CurveMatchDiagnostic> mvCurveMatchDiagnostics;
         int N;
         vector<cv::KeyPoint> mvCurrentKeys;
         vector<BezierCurve> mpCurrentCurves;

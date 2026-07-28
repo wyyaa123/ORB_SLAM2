@@ -19,7 +19,8 @@ namespace ORB_SLAM2
         std::size_t segmentIndex = 0;
         std::size_t segmentCount = 1;
 
-        std::vector<orderedEdgePoint> controlPoints; // 每条边缘可能有多段Bezier曲线，每段曲线由一组控制点定义
+        // 每条边缘可能有多段Bezier曲线，每段曲线由一组控制点定义
+        std::vector<orderedEdgePoint> controlPoints; 
         // 按二维弧长均匀采样，采样数量由曲线长度和 spacing 决定。
         std::vector<orderedEdgePoint> sampledPoints;
 

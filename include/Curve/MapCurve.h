@@ -24,13 +24,23 @@ namespace ORB_SLAM2
         std::vector<cv::Point3d> GetCurvePoints();
         size_t ExtendWithObservation(const Frame &frame, size_t observedCurveIndex);
 
+        std::map<KeyFrame *, size_t> GetObservations();
         int Observations();
 
         void AddObservation(KeyFrame *pKF, size_t idx);
+        void EraseObservation(KeyFrame *pKF);
+
+        int GetIndexInKeyFrame(KeyFrame *pKF);
+        bool IsInKeyFrame(KeyFrame *pKF);
+
+        void SetBadFlag();
+        bool isBad();
 
         MapCurve *GetReplaced();
 
-        bool isBad();
+        void IncreaseVisible(int n = 1);
+        void IncreaseFound(int n = 1);
+        float GetFoundRatio();
 
     public:
         long unsigned int mnId;
@@ -40,6 +50,7 @@ namespace ORB_SLAM2
         int nObs;
 
         bool mbTrackInView;
+        long unsigned int mnTrackReferenceForFrame;
         long unsigned int mnLastFrameSeen;
 
         static std::mutex mGlobalMutex;

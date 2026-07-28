@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -264,16 +265,16 @@ namespace ORB_SLAM2
         cv::Mat Tcw;
         std::vector<BezierCurve> observedCurves;
         std::vector<MapCurve *> mapCurveMatches;
-        std::vector<MapCurve *> mapCurveCandidates;
+        std::vector<CurveMatchDiagnostic> matchDiagnostics;
         {
             std::unique_lock<std::mutex> lock(mMutex);
             image = mIm.clone();
             Tcw = mCurveAssociationTcw.clone();
             observedCurves = mvCurveAssociationCurves;
             mapCurveMatches = mvpCurveAssociationMatches;
-            mapCurveCandidates = mvpCurveAssociationCandidates;
+            matchDiagnostics = mvCurveMatchDiagnostics;
         }
-        if (image.empty() || Tcw.empty() || mapCurveCandidates.empty())
+        if (image.empty() || Tcw.empty() || matchDiagnostics.empty())
             return cv::Mat();
 
         cv::Mat colorImage;
@@ -289,6 +290,8 @@ namespace ORB_SLAM2
 
         cv::Mat projectedImage = colorImage.clone();
         cv::Mat observedImage = colorImage.clone();
+        cv::Mat unmatchedImage = colorImage.clone();
+        cv::Mat diagnosticImage(colorImage.size(), CV_8UC3, cv::Scalar(24, 24, 24));
         std::unordered_map<MapCurve *, cv::Scalar> associatedColors;
         const size_t associationCount = std::min(observedCurves.size(), mapCurveMatches.size());
         for (size_t curveIndex = 0; curveIndex < associationCount; ++curveIndex)
@@ -301,16 +304,104 @@ namespace ORB_SLAM2
             }
         }
 
-        std::unordered_set<MapCurve *> drawnMapCurves;
-        for (MapCurve *pMapCurve : mapCurveCandidates)
+        struct CurveTextLabel
         {
-            if (!pMapCurve || !drawnMapCurves.insert(pMapCurve).second)
+            cv::Point2f position;
+            std::string text;
+            cv::Scalar color;
+            double fontScale;
+        };
+
+        const auto curveMidpoint = [](const std::vector<cv::Point2f> &samples)
+        {
+            if (samples.size() == 1)
+                return samples.front();
+
+            float totalLength = 0.0f;
+            for (size_t sampleIndex = 1; sampleIndex < samples.size(); ++sampleIndex)
+                totalLength += cv::norm(samples[sampleIndex] - samples[sampleIndex - 1]);
+
+            if (totalLength <= 1e-3f)
+                return samples[samples.size() / 2];
+
+            const float targetLength = totalLength * 0.5f;
+            float accumulatedLength = 0.0f;
+            for (size_t sampleIndex = 1; sampleIndex < samples.size(); ++sampleIndex)
+            {
+                const cv::Point2f segment = samples[sampleIndex] - samples[sampleIndex - 1];
+                const float segmentLength = cv::norm(segment);
+                if (accumulatedLength + segmentLength >= targetLength)
+                {
+                    const float ratio = segmentLength > 1e-6f ? (targetLength - accumulatedLength) / segmentLength : 0.0f;
+                    return samples[sampleIndex - 1] + ratio * segment;
+                }
+                accumulatedLength += segmentLength;
+            }
+            return samples.back();
+        };
+
+        const auto drawCurveLabels = [](cv::Mat &targetImage, const std::vector<CurveTextLabel> &labels)
+        {
+            for (const CurveTextLabel &label : labels)
+            {
+                int baseline = 0;
+                const cv::Size textSize = cv::getTextSize(label.text, cv::FONT_HERSHEY_SIMPLEX, label.fontScale, 1, &baseline);
+                cv::Point origin(cvRound(label.position.x - 0.5f * textSize.width),
+                                 cvRound(label.position.y + 0.5f * textSize.height));
+                origin.x = std::max(2, std::min(origin.x, std::max(2, targetImage.cols - textSize.width - 2)));
+                origin.y = std::max(textSize.height + 2, std::min(origin.y, std::max(textSize.height + 2, targetImage.rows - baseline - 2)));
+
+                // Draw a curve-colored outline first, then place the white ID on top.
+                cv::putText(targetImage, label.text, origin, cv::FONT_HERSHEY_SIMPLEX, label.fontScale, label.color, 3, cv::LINE_AA);
+                cv::putText(targetImage, label.text, origin, cv::FONT_HERSHEY_SIMPLEX, label.fontScale, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+            }
+        };
+
+        const auto drawPanelTitle = [](cv::Mat &targetImage, const std::string &title)
+        {
+            cv::putText(targetImage, title, cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+            cv::putText(targetImage, title, cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.65, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        };
+
+        std::vector<CurveTextLabel> projectedLabels;
+        std::vector<CurveTextLabel> observedLabels;
+        std::vector<CurveTextLabel> unmatchedLabels;
+        std::unordered_set<MapCurve *> drawnProjectedMapCurves;
+        for (MapCurve *pMapCurve : mapCurveMatches)
+        {
+            if (!pMapCurve || !drawnProjectedMapCurves.insert(pMapCurve).second)
                 continue;
+
             std::vector<cv::Point2f> projectedSamples;
             if (!ProjectMapCurve(pMapCurve, Tcw, 0.0f, projectedSamples))
                 continue;
-            const auto color = associatedColors.find(pMapCurve);
-            DrawSampledCurve(projectedImage, projectedSamples, color == associatedColors.end() ? cv::Scalar(110, 110, 110) : color->second, 2);
+            const cv::Scalar color = AssociationColor(pMapCurve->mnId);
+            DrawSampledCurve(projectedImage, projectedSamples, color, 2);
+            projectedLabels.push_back(CurveTextLabel{curveMidpoint(projectedSamples), std::to_string(pMapCurve->mnId), color, 0.5});
+        }
+
+        std::unordered_set<MapCurve *> diagnosedMapCurves;
+        std::vector<const CurveMatchDiagnostic *> unmatchedDiagnostics;
+        for (const CurveMatchDiagnostic &diagnostic : matchDiagnostics)
+        {
+            MapCurve *pMapCurve = diagnostic.pMapCurve;
+            if (!pMapCurve || !diagnosedMapCurves.insert(pMapCurve).second)
+                continue;
+
+            if (!diagnostic.matched)
+                unmatchedDiagnostics.push_back(&diagnostic);
+        }
+
+        for (const CurveMatchDiagnostic *pDiagnostic : unmatchedDiagnostics)
+        {
+            MapCurve *pMapCurve = pDiagnostic->pMapCurve;
+            std::vector<cv::Point2f> projectedSamples;
+            if (!ProjectMapCurve(pMapCurve, Tcw, 0.0f, projectedSamples))
+                continue;
+            const cv::Scalar color = AssociationColor(pMapCurve->mnId);
+            DrawSampledCurve(unmatchedImage, projectedSamples, color, 2);
+            const std::string label = std::to_string(pMapCurve->mnId) + " " + pDiagnostic->failureType;
+            unmatchedLabels.push_back(CurveTextLabel{curveMidpoint(projectedSamples), label, color, 0.42});
         }
 
         for (size_t curveIndex = 0; curveIndex < observedCurves.size(); ++curveIndex)
@@ -322,13 +413,51 @@ namespace ORB_SLAM2
             MapCurve *pMapCurve = curveIndex < mapCurveMatches.size() ? mapCurveMatches[curveIndex] : NULL;
             const auto color = associatedColors.find(pMapCurve);
             DrawSampledCurve(observedImage, observedSamples, color == associatedColors.end() ? cv::Scalar(110, 110, 110) : color->second, 2);
+            if (pMapCurve && color != associatedColors.end() && !observedSamples.empty())
+                observedLabels.push_back(CurveTextLabel{curveMidpoint(observedSamples), std::to_string(pMapCurve->mnId), color->second, 0.5});
         }
 
-        cv::putText(projectedImage, "Projected map curves", cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
-        cv::putText(observedImage, "Current Bezier curves", cv::Point(12, 28), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        drawCurveLabels(projectedImage, projectedLabels);
+        drawCurveLabels(observedImage, observedLabels);
+        drawCurveLabels(unmatchedImage, unmatchedLabels);
+
+        const int diagnosticTop = 48;
+        const int diagnosticRowHeight = 18;
+        const int maximumRows = std::max(1, (diagnosticImage.rows - diagnosticTop - 8) / diagnosticRowHeight);
+        const int diagnosticColumns = std::max(1, static_cast<int>((unmatchedDiagnostics.size() + maximumRows - 1) / maximumRows));
+        const int diagnosticColumnWidth = std::max(1, diagnosticImage.cols / diagnosticColumns);
+        for (size_t diagnosticIndex = 0; diagnosticIndex < unmatchedDiagnostics.size(); ++diagnosticIndex)
+        {
+            const CurveMatchDiagnostic &diagnostic = *unmatchedDiagnostics[diagnosticIndex];
+            const int column = static_cast<int>(diagnosticIndex) / maximumRows;
+            const int row = static_cast<int>(diagnosticIndex) % maximumRows;
+            const int x = column * diagnosticColumnWidth + 8;
+            const int y = diagnosticTop + row * diagnosticRowHeight;
+            const std::string text = "ID " + std::to_string(diagnostic.pMapCurve->mnId) + ": " + diagnostic.failureDetail;
+            int baseline = 0;
+            const cv::Size nominalSize = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.42, 1, &baseline);
+            const double availableWidth = std::max(12, diagnosticColumnWidth - 16);
+            const double fontScale = nominalSize.width > availableWidth
+                                         ? std::max(0.22, 0.42 * availableWidth / nominalSize.width)
+                                         : 0.42;
+            const cv::Scalar color = AssociationColor(diagnostic.pMapCurve->mnId);
+            cv::rectangle(diagnosticImage, cv::Point(x, y - 8), cv::Point(x + 5, y - 3), color, -1, cv::LINE_AA);
+            cv::putText(diagnosticImage, text, cv::Point(x + 10, y), cv::FONT_HERSHEY_SIMPLEX, fontScale, cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
+        }
+
+        drawPanelTitle(projectedImage, "Matched projected MapCurves");
+        drawPanelTitle(observedImage, "Current Bezier associations");
+        drawPanelTitle(unmatchedImage, "Unmatched projected MapCurves");
+        drawPanelTitle(diagnosticImage, "Unmatched MapCurve diagnostics");
+
+        cv::Mat topRow;
+        cv::Mat bottomRow;
         cv::Mat associationImage;
-        cv::hconcat(projectedImage, observedImage, associationImage);
+        cv::hconcat(projectedImage, observedImage, topRow);
+        cv::hconcat(unmatchedImage, diagnosticImage, bottomRow);
+        cv::vconcat(topRow, bottomRow, associationImage);
         cv::line(associationImage, cv::Point(projectedImage.cols, 0), cv::Point(projectedImage.cols, associationImage.rows - 1), cv::Scalar(255, 255, 255), 1);
+        cv::line(associationImage, cv::Point(0, projectedImage.rows), cv::Point(associationImage.cols - 1, projectedImage.rows), cv::Scalar(255, 255, 255), 1);
         return associationImage;
     }
 
@@ -377,6 +506,7 @@ namespace ORB_SLAM2
         mvCurveAssociationCurves = pTracker->mCurrentFrame.mvBezierCurves;
         mvpCurveAssociationMatches = pTracker->mCurrentFrame.mvpMapCurves;
         mvpCurveAssociationCandidates = pTracker->mvpCurveAssociationCandidates;
+        mvCurveMatchDiagnostics = pTracker->mCurrentFrame.mvCurveMatchDiagnostics;
         mvCurrentKeys = pTracker->mCurrentFrame.mvKeys;
         mpCurrentCurves = pTracker->mCurrentFrame.mvBezierCurves;
         N = mvCurrentKeys.size();

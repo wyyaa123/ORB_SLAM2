@@ -233,7 +233,7 @@ namespace ORB_SLAM2
                     }
                 }
 
-                if (current_cluster.size() > 10)
+                if (current_cluster.size() > 20)
                 {
                     mvEdgeClusters.emplace_back(std::move(current_cluster));
                 }

@@ -354,9 +354,6 @@ namespace ORB_SLAM2
             std::vector<orderedEdgePoint> segment = std::move(pendingSegments.back());
             pendingSegments.pop_back();
 
-            if (segment.size() < 10)
-                continue;
-
             std::vector<double> residuals;
             BezierCurve curve;
             bool fitted = false;

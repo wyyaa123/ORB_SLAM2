@@ -95,6 +95,8 @@ namespace ORB_SLAM2
         // and fill variables of the MapPoint to be used by the tracking
         bool isInFrustum(MapPoint *pMP, float viewingCosLimit);
 
+        bool isInFrustum(MapCurve *pMC, float minimumProjectedLength);
+
         // Compute the cell of a keypoint (return false if outside the grid)
         bool PosInGrid(const cv::KeyPoint &kp, int &posX, int &posY);
 
@@ -172,6 +174,7 @@ namespace ORB_SLAM2
 
         std::vector<MapCurve *> mvpMapCurves;
         std::vector<CurveSampleCorrespondence> mvCurveSampleCorrespondences;
+        std::vector<CurveMatchDiagnostic> mvCurveMatchDiagnostics;
 
         // Flag to identify outlier associations.
         std::vector<bool> mvbOutlier;

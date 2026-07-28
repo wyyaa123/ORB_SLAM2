@@ -77,10 +77,13 @@ namespace ORB_SLAM2
     protected:
         bool CheckNewKeyFrames();
         void ProcessNewKeyFrame();
+        void ProcessNewKeyFrameWithCurves();
         void CreateNewMapPoints();
 
         void MapPointCulling();
+        void MapCurveCulling();
         void SearchInNeighbors();
+        void SearchInNeighborsWithCurves();
 
         void KeyFrameCulling();
 
@@ -110,6 +113,7 @@ namespace ORB_SLAM2
         KeyFrame *mpCurrentKeyFrame;
 
         std::list<MapPoint *> mlpRecentAddedMapPoints;
+        std::list<MapCurve *> mlpRecentAddedMapCurves;
 
         std::mutex mMutexNewKFs;
 

@@ -21,6 +21,7 @@
 #include "Frame.h"
 #include "Converter.h"
 #include "ORBmatcher.h"
+#include <cmath>
 #include <thread>
 #include <tbb/blocked_range.h>
 #include <tbb/concurrent_vector.h>
@@ -47,7 +48,7 @@ namespace ORB_SLAM2
           mvKeysRight(frame.mvKeysRight), mvKeysUn(frame.mvKeysUn), mvuRight(frame.mvuRight), mvBezierCurves(frame.mvBezierCurves),
           mvDepth(frame.mvDepth), mBowVec(frame.mBowVec), mFeatVec(frame.mFeatVec),
           mDescriptors(frame.mDescriptors.clone()), mDescriptorsRight(frame.mDescriptorsRight.clone()),
-          mvpMapPoints(frame.mvpMapPoints), mvpMapCurves(frame.mvpMapCurves), mvCurveSampleCorrespondences(frame.mvCurveSampleCorrespondences), mvbOutlier(frame.mvbOutlier), mvbCurveOutlier(frame.mvbCurveOutlier), mnId(frame.mnId),
+          mvpMapPoints(frame.mvpMapPoints), mvpMapCurves(frame.mvpMapCurves), mvCurveSampleCorrespondences(frame.mvCurveSampleCorrespondences), mvCurveMatchDiagnostics(frame.mvCurveMatchDiagnostics), mvbOutlier(frame.mvbOutlier), mvbCurveOutlier(frame.mvbCurveOutlier), mnId(frame.mnId),
           mpReferenceKF(frame.mpReferenceKF), mnScaleLevels(frame.mnScaleLevels),
           mfScaleFactor(frame.mfScaleFactor), mfLogScaleFactor(frame.mfLogScaleFactor),
           mvScaleFactors(frame.mvScaleFactors), mvInvScaleFactors(frame.mvInvScaleFactors),
@@ -255,7 +256,7 @@ namespace ORB_SLAM2
 
     void Frame::ExtractCurve(const cv::Mat &mImGray, const cv::Mat &depth, const CurveConfigPtr &curveConfigPtr, const cv::Mat &Sem)
     {
-        EdgeExtracter edgeExtractor(20.0f, 100, 150);
+        EdgeExtracter edgeExtractor(20.0f, 50, 150);
         std::vector<Edge> vEdges = edgeExtractor(mImGray, Sem);
 
         const BezierCurveFitter bezierFitter(curveConfigPtr->BezierFitter);
@@ -271,7 +272,7 @@ namespace ORB_SLAM2
 
                                   for (BezierCurve &curve : bezierCurves)
                                   {
-                                      curve.sampleByArcLengthSpacing(3);
+                                      curve.sampleByArcLengthSpacing(5);
 
                                       const size_t totalPointCount = curve.sampledPoints.size();
                                       for (size_t j = 0; j < totalPointCount; ++j)
@@ -304,17 +305,17 @@ namespace ORB_SLAM2
         mvBezierCurves.insert(mvBezierCurves.end(),
                               std::make_move_iterator(acceptedCurves.begin()),
                               std::make_move_iterator(acceptedCurves.end()));
-                              
+
         std::sort(mvBezierCurves.begin(), mvBezierCurves.end(), [](const BezierCurve &a, const BezierCurve &b)
-          {
+                  {
               if (a.edgeChainId != b.edgeChainId)
                   return a.edgeChainId < b.edgeChainId;
-              return a.segmentIndex < b.segmentIndex;
-          });
+              return a.segmentIndex < b.segmentIndex; });
 
         NC = mvBezierCurves.size();
         mvpMapCurves = vector<MapCurve *>(NC, static_cast<MapCurve *>(NULL));
         mvCurveSampleCorrespondences.clear();
+        mvCurveMatchDiagnostics.clear();
         mvbCurveOutlier.assign(NC, false);
     }
 
@@ -467,6 +468,74 @@ namespace ORB_SLAM2
         pMP->mTrackViewCos = viewCos;
 
         return true;
+    }
+
+    bool Frame::isInFrustum(MapCurve *pMC, const float minimumProjectedLength)
+    {
+        pMC->mbTrackInView = false;
+
+        const std::vector<cv::Point3d> worldPoints = pMC->GetCurvePoints();
+        if (worldPoints.size() < 3)
+            return false;
+
+        int consecutiveVisibleSamples = 0;
+        float consecutiveProjectedLength = 0.0f;
+        cv::Point2f previousProjection;
+        bool hasPreviousProjection = false;
+
+        for (const cv::Point3d &worldPoint : worldPoints)
+        {
+            const float worldX = static_cast<float>(worldPoint.x);
+            const float worldY = static_cast<float>(worldPoint.y);
+            const float worldZ = static_cast<float>(worldPoint.z);
+
+            const float cameraX = mRcw.at<float>(0, 0) * worldX +
+                                  mRcw.at<float>(0, 1) * worldY +
+                                  mRcw.at<float>(0, 2) * worldZ +
+                                  mtcw.at<float>(0);
+            const float cameraY = mRcw.at<float>(1, 0) * worldX +
+                                  mRcw.at<float>(1, 1) * worldY +
+                                  mRcw.at<float>(1, 2) * worldZ +
+                                  mtcw.at<float>(1);
+            const float cameraZ = mRcw.at<float>(2, 0) * worldX +
+                                  mRcw.at<float>(2, 1) * worldY +
+                                  mRcw.at<float>(2, 2) * worldZ +
+                                  mtcw.at<float>(2);
+
+            if (cameraZ <= FLT_EPSILON)
+            {
+                consecutiveVisibleSamples = 0;
+                consecutiveProjectedLength = 0.0f;
+                hasPreviousProjection = false;
+                continue;
+            }
+
+            const float inverseZ = 1.0f / cameraZ;
+            const cv::Point2f projection(fx * cameraX * inverseZ + cx, fy * cameraY * inverseZ + cy);
+
+            if (projection.x < mnMinX || projection.x > mnMaxX || projection.y < mnMinY || projection.y > mnMaxY)
+            {
+                consecutiveVisibleSamples = 0;
+                consecutiveProjectedLength = 0.0f;
+                hasPreviousProjection = false;
+                continue;
+            }
+
+            if (hasPreviousProjection)
+                consecutiveProjectedLength += cv::norm(projection - previousProjection);
+
+            previousProjection = projection;
+            hasPreviousProjection = true;
+            ++consecutiveVisibleSamples;
+
+            if (consecutiveVisibleSamples >= 3 && consecutiveProjectedLength >= minimumProjectedLength)
+            {
+                pMC->mbTrackInView = true;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     vector<size_t> Frame::GetFeaturesInArea(const float &x, const float &y, const float &r, const int minLevel, const int maxLevel) const

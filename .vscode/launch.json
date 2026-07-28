@@ -16,10 +16,10 @@
                 "${workspaceFolder}/Examples/RGB-D/exp.yaml",
                 // "${workspaceFolder}/Examples/RGB-D-Inertial/RealSense_D435i.yaml",
                 // "${workspaceFolder}/datasets/Real/D435I/ot1",
-                "${workspaceFolder}/datasets/Real/D435I/b1",
+                "${workspaceFolder}/datasets/Real/D435I/b2",
                 // "${workspaceFolder}/datasets/Real/D435I/ot1/camera_imu.txt",
                 // "${workspaceFolder}/datasets/Real/D435I/ot1/associates_rgbd_semantic.txt"
-                "${workspaceFolder}/datasets/Real/D435I/b1/associates_rgbd_semantic.txt"
+                "${workspaceFolder}/datasets/Real/D435I/b2/associate.txt"
             ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",

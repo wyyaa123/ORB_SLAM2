@@ -46,6 +46,9 @@ namespace ORB_SLAM2
         CurveSimilarity();
 
         double cost;
+        double meanDistance;
+        double meanDirectionCost;
+        double dtwCost;
         int minMapIndex;
         int maxMapIndex;
         bool valid;

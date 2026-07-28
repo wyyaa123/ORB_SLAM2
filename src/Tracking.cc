@@ -36,6 +36,7 @@
 #include <iostream>
 
 #include <mutex>
+#include <unordered_set>
 #include <unistd.h>
 
 using namespace std;
@@ -594,7 +595,7 @@ namespace ORB_SLAM2
             if (!mbOnlyTracking)
             {
                 if (bOK)
-                    bOK = TrackLocalMap();
+                    bOK = TrackLocalMapWithCurves();
             }
 
             if (bOK)
@@ -1444,6 +1445,70 @@ namespace ORB_SLAM2
             return true;
     }
 
+    bool Tracking::TrackLocalMapWithCurves()
+    {
+        // We have an estimation of the camera pose and some map points tracked in the frame.
+        // We retrieve the local map and try to find matches to points in the local map.
+
+        UpdateLocalMapWithCurves();
+
+        SearchLocalPoints();
+        SearchLocalCurves();
+
+        // Optimize Pose
+        Optimizer::PoseOptimizationWithCurves(&mCurrentFrame);
+        mnMatchesInliers = 0;
+
+        // Update MapPoints Statistics
+        for (int i = 0; i < mCurrentFrame.N; i++)
+        {
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                if (!mCurrentFrame.mvbOutlier[i])
+                {
+                    mCurrentFrame.mvpMapPoints[i]->IncreaseFound();
+                    if (!mbOnlyTracking)
+                    {
+                        if (mCurrentFrame.mvpMapPoints[i]->Observations() > 0)
+                            mnMatchesInliers++;
+                    }
+                    else
+                        mnMatchesInliers++;
+                }
+                else if (mSensor == System::STEREO)
+                    mCurrentFrame.mvpMapPoints[i] = static_cast<MapPoint *>(NULL);
+            }
+        }
+
+        for (int i = 0; i < mCurrentFrame.NC; i++)
+        {
+            if (mCurrentFrame.mvpMapCurves[i])
+            {
+                if (!mCurrentFrame.mvbCurveOutlier[i])
+                {
+                    mCurrentFrame.mvpMapCurves[i]->IncreaseFound();
+                    if (!mbOnlyTracking)
+                    {
+                        if (mCurrentFrame.mvpMapCurves[i]->Observations() > 0)
+                            mnMatchesInliers++;
+                    }
+                    else
+                        mnMatchesInliers++;
+                }
+            }
+        }
+
+        // Decide if the tracking was succesful
+        // More restrictive if there was a relocalization recently
+        if (mCurrentFrame.mnId < mnLastRelocFrameId + mMaxFrames && mnMatchesInliers < 50)
+            return false;
+
+        if (mnMatchesInliers < 30)
+            return false;
+        else
+            return true;
+    }
+
     bool Tracking::NeedNewKeyFrame()
     {
         if (mbOnlyTracking)
@@ -1772,6 +1837,73 @@ namespace ORB_SLAM2
         }
     }
 
+    void Tracking::SearchLocalCurves()
+    {
+        for (vector<MapCurve *>::iterator vit = mCurrentFrame.mvpMapCurves.begin(), vend = mCurrentFrame.mvpMapCurves.end(); vit != vend; vit++)
+        {
+            MapCurve *pMC = *vit;
+            if (pMC)
+            {
+                if (pMC->isBad())
+                {
+                    *vit = static_cast<MapCurve *>(NULL);
+                }
+                else
+                {
+                    pMC->IncreaseVisible();
+                    pMC->mnLastFrameSeen = mCurrentFrame.mnId;
+                    pMC->mbTrackInView = false;
+                }
+            }
+        }
+
+        std::vector<MapCurve *> visibleLocalCurves;
+        visibleLocalCurves.reserve(mvpLocalMapCurves.size());
+        std::unordered_set<MapCurve *> insertedCurves;
+
+        for (vector<MapCurve *>::iterator vit = mvpLocalMapCurves.begin(), vend = mvpLocalMapCurves.end(); vit != vend; vit++)
+        {
+            MapCurve *pMC = *vit;
+            if (pMC->mnLastFrameSeen == mCurrentFrame.mnId)
+                continue;
+            if (pMC->isBad())
+                continue;
+            if (mCurrentFrame.isInFrustum(pMC, 5.0f))
+            {
+                pMC->IncreaseVisible();
+                if (insertedCurves.insert(pMC).second)
+                    visibleLocalCurves.push_back(pMC);
+            }
+        }
+
+        if (!visibleLocalCurves.empty())
+        {
+            // Local-map matching supplements the primary last-frame/reference
+            // association, but its many rejected candidates should not replace
+            // the primary diagnostics shown by FrameDrawer.
+            std::vector<CurveMatchDiagnostic> primaryDiagnostics = mCurrentFrame.mvCurveMatchDiagnostics;
+            CurveMatcher curveMatcher(mCurveConfig);
+            curveMatcher.AssociateMapCurvesToFrame(visibleLocalCurves, mCurrentFrame);
+
+            std::unordered_set<MapCurve *> matchedMapCurves;
+            for (MapCurve *pMatchedMapCurve : mCurrentFrame.mvpMapCurves)
+            {
+                if (pMatchedMapCurve)
+                    matchedMapCurves.insert(pMatchedMapCurve);
+            }
+            for (CurveMatchDiagnostic &diagnostic : primaryDiagnostics)
+            {
+                diagnostic.matched = matchedMapCurves.count(diagnostic.pMapCurve) != 0;
+                if (diagnostic.matched)
+                {
+                    diagnostic.failureType.clear();
+                    diagnostic.failureDetail.clear();
+                }
+            }
+            mCurrentFrame.mvCurveMatchDiagnostics = std::move(primaryDiagnostics);
+        }
+    }
+
     void Tracking::UpdateLocalMap()
     {
         // This is for visualization
@@ -1780,6 +1912,18 @@ namespace ORB_SLAM2
         // Update
         UpdateLocalKeyFrames();
         UpdateLocalPoints();
+    }
+
+    void Tracking::UpdateLocalMapWithCurves()
+    {
+        // This is for visualization
+        mpMap->SetReferenceMapPoints(mvpLocalMapPoints);
+        mpMap->SetReferenceMapCurves(mvpLocalMapCurves);
+
+        // Update
+        UpdateLocalKeyFramesWithCurves();
+        UpdateLocalPoints();
+        UpdateLocalCurves();
     }
 
     void Tracking::UpdateLocalPoints()
@@ -1807,6 +1951,31 @@ namespace ORB_SLAM2
         }
     }
 
+    void Tracking::UpdateLocalCurves()
+    {
+        mvpLocalMapCurves.clear();
+
+        for (vector<KeyFrame *>::const_iterator itKF = mvpLocalKeyFrames.begin(), itEndKF = mvpLocalKeyFrames.end(); itKF != itEndKF; itKF++)
+        {
+            KeyFrame *pKF = *itKF;
+            const vector<MapCurve *> vpMCs = pKF->GetMapCurveMatches();
+
+            for (vector<MapCurve *>::const_iterator itMC = vpMCs.begin(), itEndMC = vpMCs.end(); itMC != itEndMC; itMC++)
+            {
+                MapCurve *pMC = *itMC;
+                if (!pMC)
+                    continue;
+                if (pMC->mnTrackReferenceForFrame == mCurrentFrame.mnId)
+                    continue;
+                if (!pMC->isBad())
+                {
+                    mvpLocalMapCurves.push_back(pMC);
+                    pMC->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+                }
+            }
+        }
+    }
+
     void Tracking::UpdateLocalKeyFrames()
     {
         // Each map point vote for the keyframes in which it has been observed
@@ -1825,6 +1994,132 @@ namespace ORB_SLAM2
                 else
                 {
                     mCurrentFrame.mvpMapPoints[i] = NULL;
+                }
+            }
+        }
+
+        if (keyframeCounter.empty())
+            return;
+
+        int max = 0;
+        KeyFrame *pKFmax = static_cast<KeyFrame *>(NULL);
+
+        mvpLocalKeyFrames.clear();
+        mvpLocalKeyFrames.reserve(3 * keyframeCounter.size());
+
+        // All keyframes that observe a map point are included in the local map. Also check which keyframe shares most points
+        for (map<KeyFrame *, int>::const_iterator it = keyframeCounter.begin(), itEnd = keyframeCounter.end(); it != itEnd; it++)
+        {
+            KeyFrame *pKF = it->first;
+
+            if (pKF->isBad())
+                continue;
+
+            if (it->second > max)
+            {
+                max = it->second;
+                pKFmax = pKF;
+            }
+
+            mvpLocalKeyFrames.push_back(it->first);
+            pKF->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+        }
+
+        // Include also some not-already-included keyframes that are neighbors to already-included keyframes
+        for (vector<KeyFrame *>::const_iterator itKF = mvpLocalKeyFrames.begin(), itEndKF = mvpLocalKeyFrames.end(); itKF != itEndKF; itKF++)
+        {
+            // Limit the number of keyframes
+            if (mvpLocalKeyFrames.size() > 80)
+                break;
+
+            KeyFrame *pKF = *itKF;
+
+            const vector<KeyFrame *> vNeighs = pKF->GetBestCovisibilityKeyFrames(10);
+
+            for (vector<KeyFrame *>::const_iterator itNeighKF = vNeighs.begin(), itEndNeighKF = vNeighs.end(); itNeighKF != itEndNeighKF; itNeighKF++)
+            {
+                KeyFrame *pNeighKF = *itNeighKF;
+                if (!pNeighKF->isBad())
+                {
+                    if (pNeighKF->mnTrackReferenceForFrame != mCurrentFrame.mnId)
+                    {
+                        mvpLocalKeyFrames.push_back(pNeighKF);
+                        pNeighKF->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+                        break;
+                    }
+                }
+            }
+
+            const set<KeyFrame *> spChilds = pKF->GetChilds();
+            for (set<KeyFrame *>::const_iterator sit = spChilds.begin(), send = spChilds.end(); sit != send; sit++)
+            {
+                KeyFrame *pChildKF = *sit;
+                if (!pChildKF->isBad())
+                {
+                    if (pChildKF->mnTrackReferenceForFrame != mCurrentFrame.mnId)
+                    {
+                        mvpLocalKeyFrames.push_back(pChildKF);
+                        pChildKF->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+                        break;
+                    }
+                }
+            }
+
+            KeyFrame *pParent = pKF->GetParent();
+            if (pParent)
+            {
+                if (pParent->mnTrackReferenceForFrame != mCurrentFrame.mnId)
+                {
+                    mvpLocalKeyFrames.push_back(pParent);
+                    pParent->mnTrackReferenceForFrame = mCurrentFrame.mnId;
+                    break;
+                }
+            }
+        }
+
+        if (pKFmax)
+        {
+            mpReferenceKF = pKFmax;
+            mCurrentFrame.mpReferenceKF = mpReferenceKF;
+        }
+    }
+
+    void Tracking::UpdateLocalKeyFramesWithCurves()
+    {
+        // Each map point vote for the keyframes in which it has been observed
+        map<KeyFrame *, int> keyframeCounter;
+        for (int i = 0; i < mCurrentFrame.N; i++)
+        {
+            if (mCurrentFrame.mvpMapPoints[i])
+            {
+                MapPoint *pMP = mCurrentFrame.mvpMapPoints[i];
+                if (!pMP->isBad())
+                {
+                    const map<KeyFrame *, size_t> observations = pMP->GetObservations();
+                    for (map<KeyFrame *, size_t>::const_iterator it = observations.begin(), itend = observations.end(); it != itend; it++)
+                        keyframeCounter[it->first]++;
+                }
+                else
+                {
+                    mCurrentFrame.mvpMapPoints[i] = NULL;
+                }
+            }
+        }
+
+        for (int i = 0; i < mCurrentFrame.NC; ++i)
+        {
+            if (mCurrentFrame.mvpMapCurves[i])
+            {
+                MapCurve *pMC = mCurrentFrame.mvpMapCurves[i];
+                if (!pMC->isBad())
+                {
+                    const map<KeyFrame *, size_t> observations = pMC->GetObservations();
+                    for (map<KeyFrame *, size_t>::const_iterator it = observations.begin(), itend = observations.end(); it != itend; it++)
+                        keyframeCounter[it->first]++;
+                }
+                else
+                {
+                    mCurrentFrame.mvpMapCurves[i] = NULL;
                 }
             }
         }

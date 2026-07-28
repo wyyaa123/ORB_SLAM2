@@ -222,6 +222,12 @@ namespace ORB_SLAM2
         return mvpMapCurves;
     }
 
+    void ORB_SLAM2::KeyFrame::EraseMapCurveMatch(const size_t &idx)
+    {
+        unique_lock<mutex> lock(mMutexFeatures);
+        mvpMapCurves[idx] = static_cast<MapCurve *>(NULL);
+    }
+
     void KeyFrame::EraseMapPointMatch(const size_t &idx)
     {
         unique_lock<mutex> lock(mMutexFeatures);
@@ -299,10 +305,12 @@ namespace ORB_SLAM2
         map<KeyFrame *, int> KFcounter;
 
         vector<MapPoint *> vpMP;
+        vector<MapCurve *> vpMC;
 
         {
             unique_lock<mutex> lockMPs(mMutexFeatures);
             vpMP = mvpMapPoints;
+            vpMC = mvpMapCurves;
         }
 
         // For all map points in keyframe check in which other keyframes are they seen
@@ -318,6 +326,26 @@ namespace ORB_SLAM2
                 continue;
 
             map<KeyFrame *, size_t> observations = pMP->GetObservations();
+
+            for (map<KeyFrame *, size_t>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
+            {
+                if (mit->first->mnId == mnId)
+                    continue;
+                KFcounter[mit->first]++;
+            }
+        }
+
+        for (vector<MapCurve *>::iterator vit = vpMC.begin(), vend = vpMC.end(); vit != vend; vit++)
+        {
+            MapCurve *pMC = *vit;
+
+            if (!pMC)
+                continue;
+
+            if (pMC->isBad())
+                continue;
+
+            map<KeyFrame *, size_t> observations = pMC->GetObservations();
 
             for (map<KeyFrame *, size_t>::iterator mit = observations.begin(), mend = observations.end(); mit != mend; mit++)
             {

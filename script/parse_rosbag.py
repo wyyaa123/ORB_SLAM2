@@ -125,6 +125,6 @@ class parseBag():
 
 if __name__ == '__main__':
     try:
-        parse = parseBag("datasets/Real/D435I/b1.bag", "datasets/Real/D435I/b1")
+        parse = parseBag("datasets/Real/D435I/wallpainting_2026-07-27-14-57-50.bag", "datasets/Real/D435I/wallpainting")
     except rospy.ROSInterruptException:
         pass

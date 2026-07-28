@@ -77,6 +77,15 @@ namespace ORB_SLAM2
         pangolin::Var<bool> menuStepByStep("menu.Step By Step", false, true); // false, true
         pangolin::Var<bool> menuStep("menu.Step", false, false);
 
+        // Press F10 while the Pangolin map window has focus to trigger the
+        // same one-frame advance as clicking the "Step" button.
+        pangolin::RegisterKeyPressCallback(
+            pangolin::PANGO_SPECIAL + pangolin::PANGO_KEY_F10,
+            [&menuStep]()
+            {
+                menuStep = true;
+            });
+
         // Define Camera Render Object (for view / scene browsing)
         pangolin::OpenGlRenderState s_cam(
             pangolin::ProjectionMatrix(1024, 768, mViewpointF, mViewpointF, 512, 389, 0.1, 1000),
@@ -175,8 +184,11 @@ namespace ORB_SLAM2
                 if (!imCurveAssociations.empty())
                 {
                     cv::imshow("ORB-SLAM2: Curve Associations", imCurveAssociations);
-                    // cv::imwrite(to_string(frameCounter) + "_curve_associations.png", imCurveAssociations);
-                    ++frameCounter;
+                    if (menuStepByStep && menuStep)
+                    {
+                        cv::imwrite(to_string(frameCounter) + "_curve_associations.png", imCurveAssociations);
+                        ++frameCounter;
+                    }
                 }
             }
 

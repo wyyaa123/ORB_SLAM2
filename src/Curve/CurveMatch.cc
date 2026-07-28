@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <iomanip>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -21,6 +23,13 @@ namespace ORB_SLAM2
     const float kMaxMeanDirectionCost = 0.40f;
     const float kFragmentEndpointDistance = 12.0f;
     const float kFragmentTangentAlignment = 0.75f;
+
+    static std::string DiagnosticNumber(const double value, const int precision = 2)
+    {
+        std::ostringstream stream;
+        stream << std::fixed << std::setprecision(precision) << value;
+        return stream.str();
+    }
 
     CurveSampleRef::CurveSampleRef(const size_t curveIndexValue, const size_t sampleIndexValue)
         : curveIndex(curveIndexValue), sampleIndex(sampleIndexValue)
@@ -41,7 +50,7 @@ namespace ORB_SLAM2
         matchedObservedSamples.insert(observedSampleIndex);
     }
 
-    CurveSimilarity::CurveSimilarity() : cost(kInvalidCost), minMapIndex(-1), maxMapIndex(-1), valid(false)
+    CurveSimilarity::CurveSimilarity() : cost(kInvalidCost), meanDistance(kInvalidCost), meanDirectionCost(1.0), dtwCost(kInvalidCost), minMapIndex(-1), maxMapIndex(-1), valid(false)
     {
     }
 
@@ -329,16 +338,16 @@ namespace ORB_SLAM2
         const DirectedCurveMetrics observedToMap = ComputeDirectedMetrics(mapSamples, observedSamples);
         const DirectedCurveMetrics mapToObserved = ComputeDirectedMetrics(observedSamples, mapSamples);
 
-        const double meanDistance = std::min(observedToMap.meanDistance, mapToObserved.meanDistance);
-        const double meanDirectionCost = std::min(observedToMap.meanDirectionCost, mapToObserved.meanDirectionCost);
-        if (meanDistance > maximumMeanDistance || meanDirectionCost > kMaxMeanDirectionCost)
+        result.meanDistance = std::min(observedToMap.meanDistance, mapToObserved.meanDistance);
+        result.meanDirectionCost = std::min(observedToMap.meanDirectionCost, mapToObserved.meanDirectionCost);
+        if (result.meanDistance > maximumMeanDistance || result.meanDirectionCost > kMaxMeanDirectionCost)
         {
             return result;
         }
 
-        const double dtwCost = std::min(OrientationIndependentDtw(mapSamples, observedSamples), OrientationIndependentDtw(observedSamples, mapSamples));
+        result.dtwCost = std::min(OrientationIndependentDtw(mapSamples, observedSamples), OrientationIndependentDtw(observedSamples, mapSamples));
 
-        result.cost = 0.55 * dtwCost + 0.30 * meanDistance + 0.15 * meanDirectionCost;
+        result.cost = 0.55 * result.dtwCost + 0.30 * result.meanDistance + 0.15 * result.meanDirectionCost;
         result.minMapIndex = observedToMap.minReferenceIndex;
         result.maxMapIndex = observedToMap.maxReferenceIndex;
         result.valid = std::isfinite(result.cost);
@@ -531,7 +540,8 @@ namespace ORB_SLAM2
     int CurveMatcher::AssociateMapCurvesToFrame(const std::vector<MapCurve *> &mapCurves, Frame &currentFrame)
     {
         currentFrame.mvCurveSampleCorrespondences.clear();
-        if (!mCurveConfig || mapCurves.empty() || currentFrame.mvBezierCurves.empty() || currentFrame.mTcw.empty())
+        currentFrame.mvCurveMatchDiagnostics.clear();
+        if (!mCurveConfig || mapCurves.empty())
         {
             return 0;
         }
@@ -546,6 +556,75 @@ namespace ORB_SLAM2
         const float minimumCoverage = std::max(0.0f, std::min(1.0f, mCurveConfig->minCandidateCoverage));
         const double unmatchedCost = std::max(0.1f, mCurveConfig->unmatchedCost);
 
+        std::unordered_map<MapCurve *, size_t> diagnosticIndexByMapCurve;
+        for (MapCurve *pMapCurve : mapCurves)
+        {
+            if (!pMapCurve || diagnosticIndexByMapCurve.count(pMapCurve) != 0)
+                continue;
+
+            CurveMatchDiagnostic diagnostic;
+            diagnostic.pMapCurve = pMapCurve;
+            diagnostic.failureType = "pending";
+            diagnostic.failureDetail = "matching not completed";
+            diagnosticIndexByMapCurve[pMapCurve] = currentFrame.mvCurveMatchDiagnostics.size();
+            currentFrame.mvCurveMatchDiagnostics.push_back(diagnostic);
+        }
+
+        std::vector<int> diagnosticStages(currentFrame.mvCurveMatchDiagnostics.size(), -1);
+        const auto setDiagnostic = [&](const size_t diagnosticIndex, const int stage, const std::string &type, const std::string &detail)
+        {
+            if (diagnosticIndex >= currentFrame.mvCurveMatchDiagnostics.size() || stage < diagnosticStages[diagnosticIndex])
+                return;
+            diagnosticStages[diagnosticIndex] = stage;
+            currentFrame.mvCurveMatchDiagnostics[diagnosticIndex].failureType = type;
+            currentFrame.mvCurveMatchDiagnostics[diagnosticIndex].failureDetail = detail;
+        };
+
+        const auto finalizeDiagnostics = [&]()
+        {
+            std::unordered_set<MapCurve *> matchedMapCurves;
+            for (MapCurve *pMapCurve : currentFrame.mvpMapCurves)
+            {
+                if (pMapCurve)
+                    matchedMapCurves.insert(pMapCurve);
+            }
+
+            for (size_t diagnosticIndex = 0; diagnosticIndex < currentFrame.mvCurveMatchDiagnostics.size(); ++diagnosticIndex)
+            {
+                CurveMatchDiagnostic &diagnostic = currentFrame.mvCurveMatchDiagnostics[diagnosticIndex];
+                diagnostic.matched = matchedMapCurves.count(diagnostic.pMapCurve) != 0;
+                if (diagnostic.matched)
+                {
+                    diagnostic.failureType.clear();
+                    diagnostic.failureDetail.clear();
+                }
+                else if (diagnostic.failureType == "pending")
+                {
+                    diagnostic.failureType = "assignment";
+                    diagnostic.failureDetail = "no current Bezier curve was assigned";
+                }
+            }
+        };
+
+        if (currentFrame.mvCurveMatchDiagnostics.empty())
+            return 0;
+
+        if (currentFrame.mvBezierCurves.empty())
+        {
+            for (size_t diagnosticIndex = 0; diagnosticIndex < currentFrame.mvCurveMatchDiagnostics.size(); ++diagnosticIndex)
+                setDiagnostic(diagnosticIndex, 0, "observation", "Bezier curve count 0 < 1");
+            finalizeDiagnostics();
+            return 0;
+        }
+
+        if (currentFrame.mTcw.empty())
+        {
+            for (size_t diagnosticIndex = 0; diagnosticIndex < currentFrame.mvCurveMatchDiagnostics.size(); ++diagnosticIndex)
+                setDiagnostic(diagnosticIndex, 0, "pose", "current pose is unavailable");
+            finalizeDiagnostics();
+            return 0;
+        }
+
         // 1. Convert the samples of each observed Bezier curve to the common floating-point representation used by the matcher.
         std::vector<std::vector<cv::Point2f>> observedCurves(currentFrame.mvBezierCurves.size());
         for (size_t curveIndex = 0; curveIndex < currentFrame.mvBezierCurves.size(); ++curveIndex)
@@ -559,7 +638,9 @@ namespace ORB_SLAM2
 
         // 2. Project every valid map curve into the current frame. The input may contain the same map curve more than once, so keep only the first occurrence.
         std::vector<ProjectedMapCurve> projectedCurves;
+        std::vector<size_t> projectedDiagnosticIndices;
         projectedCurves.reserve(mapCurves.size());
+        projectedDiagnosticIndices.reserve(mapCurves.size());
         std::unordered_set<MapCurve *> processedMapCurves;
         for (MapCurve *pMapCurve : mapCurves)
         {
@@ -568,15 +649,29 @@ namespace ORB_SLAM2
                 continue;
             }
 
+            const size_t diagnosticIndex = diagnosticIndexByMapCurve[pMapCurve];
+            if (pMapCurve->isBad())
+            {
+                setDiagnostic(diagnosticIndex, 0, "invalid", "MapCurve is marked bad");
+                continue;
+            }
+
             ProjectedMapCurve projectedCurve;
             if (ProjectMapCurve(pMapCurve, currentFrame, searchRadius, projectedCurve))
             {
                 projectedCurves.push_back(std::move(projectedCurve));
+                projectedDiagnosticIndices.push_back(diagnosticIndex);
+                setDiagnostic(diagnosticIndex, 1, "candidate", "no nearby Bezier candidate");
             }
+            else
+                setDiagnostic(diagnosticIndex, 0, "projection", "visible projected samples < 2");
         }
 
         if (projectedCurves.empty())
+        {
+            finalizeDiagnostics();
             return 0;
+        }
 
         // 3. Index all observed samples by image position. For each projected map sample, query the surrounding cells and then apply the exact circular radius test.
         CurveSampleGrid sampleGrid(currentFrame.mnMinX, currentFrame.mnMinY, currentFrame.mnMaxX, currentFrame.mnMaxY, searchRadius);
@@ -596,6 +691,7 @@ namespace ORB_SLAM2
         {
             const std::vector<cv::Point2f> &mapSamples = projectedCurves[mapIndex].samples;
             std::vector<CandidateStatistics> candidateStatistics(observedCurves.size());
+            const size_t diagnosticIndex = projectedDiagnosticIndices[mapIndex];
 
             for (const cv::Point2f &mapPoint : mapSamples)
             {
@@ -623,23 +719,57 @@ namespace ORB_SLAM2
                 }
             }
 
+            size_t bestUniqueHitCount = 0;
+            size_t bestRequiredHitCount = static_cast<size_t>(minimumHits);
+            float bestCoverage = 0.0f;
+            float bestCoverageAfterHitThreshold = 0.0f;
+            bool hasEligibleObservedCurve = false;
+            bool passedHitThreshold = false;
+            bool hasBestHitStatistics = false;
+
             // Require both an absolute number of hits and coverage of the shorter curve. This prevents a single accidental intersection from becoming a matching candidate.
             for (size_t curveIndex = 0; curveIndex < observedCurves.size(); ++curveIndex)
             {
                 const size_t shorterSampleCount = std::min(mapSamples.size(), observedCurves[curveIndex].size());
                 if (shorterSampleCount < 2)
                     continue;
+                hasEligibleObservedCurve = true;
 
                 const CandidateStatistics &statistics = candidateStatistics[curveIndex];
                 const size_t uniqueHitCount = std::min(statistics.matchedMapSamples, statistics.matchedObservedSamples.size());
                 const size_t requiredHitCount = std::min(shorterSampleCount, static_cast<size_t>(minimumHits));
                 const float coverage = static_cast<float>(uniqueHitCount) / static_cast<float>(shorterSampleCount);
+                if (!hasBestHitStatistics || uniqueHitCount > bestUniqueHitCount ||
+                    (uniqueHitCount == bestUniqueHitCount && coverage > bestCoverage))
+                {
+                    hasBestHitStatistics = true;
+                    bestUniqueHitCount = uniqueHitCount;
+                    bestRequiredHitCount = requiredHitCount;
+                    bestCoverage = coverage;
+                }
+                if (uniqueHitCount >= requiredHitCount)
+                {
+                    passedHitThreshold = true;
+                    bestCoverageAfterHitThreshold = std::max(bestCoverageAfterHitThreshold, coverage);
+                }
 
                 if (uniqueHitCount >= requiredHitCount && coverage >= minimumCoverage)
                 {
                     candidatesByMap[mapIndex].push_back(curveIndex);
                 }
             }
+
+            if (candidatesByMap[mapIndex].empty())
+            {
+                if (!hasEligibleObservedCurve)
+                    setDiagnostic(diagnosticIndex, 1, "samples", "observed sample count < 2");
+                else if (!passedHitThreshold)
+                    setDiagnostic(diagnosticIndex, 1, "hits", "hits " + std::to_string(bestUniqueHitCount) + " < " + std::to_string(bestRequiredHitCount));
+                else
+                    setDiagnostic(diagnosticIndex, 1, "coverage", "coverage " + DiagnosticNumber(bestCoverageAfterHitThreshold) + " < " + DiagnosticNumber(minimumCoverage));
+            }
+            else
+                setDiagnostic(diagnosticIndex, 2, "similarity", "no candidate passed the shape thresholds");
         }
 
         // 4. Create one assignment row for each currently unassociated observation. Similarity is evaluated only for candidates found by the radius search above.
@@ -658,7 +788,13 @@ namespace ORB_SLAM2
 
         if (rowToCurveIndex.empty())
         {
+            for (size_t mapIndex = 0; mapIndex < projectedCurves.size(); ++mapIndex)
+            {
+                if (!candidatesByMap[mapIndex].empty())
+                    setDiagnostic(projectedDiagnosticIndices[mapIndex], 4, "assignment", "all Bezier observations are already associated");
+            }
             BuildFixedSampleCorrespondences(currentFrame);
+            finalizeDiagnostics();
             return 0;
         }
 
@@ -666,6 +802,12 @@ namespace ORB_SLAM2
         const size_t mapCount = projectedCurves.size();
         std::vector<std::vector<CurveSimilarity>> similarities(rowCount, std::vector<CurveSimilarity>(mapCount));
         std::vector<std::vector<double>> costMatrix(rowCount, std::vector<double>(mapCount + rowCount, kInvalidCost));
+        std::vector<bool> evaluatedSimilarity(mapCount, false);
+        std::vector<bool> hasValidSimilarity(mapCount, false);
+        std::vector<double> bestValidCost(mapCount, kInvalidCost);
+        std::vector<double> bestInvalidScore(mapCount, kInvalidCost);
+        std::vector<std::string> bestInvalidType(mapCount);
+        std::vector<std::string> bestInvalidDetail(mapCount);
 
         for (size_t mapIndex = 0; mapIndex < mapCount; ++mapIndex)
         {
@@ -677,10 +819,62 @@ namespace ORB_SLAM2
 
                 CurveSimilarity similarity = ComputeCurveSimilarity(projectedCurves[mapIndex], observedCurves[curveIndex], searchRadius);
                 similarities[static_cast<size_t>(row)][mapIndex] = similarity;
+                evaluatedSimilarity[mapIndex] = true;
                 if (similarity.valid)
                 {
                     costMatrix[static_cast<size_t>(row)][mapIndex] = similarity.cost;
+                    hasValidSimilarity[mapIndex] = true;
+                    bestValidCost[mapIndex] = std::min(bestValidCost[mapIndex], similarity.cost);
                 }
+                else
+                {
+                    const bool distanceFailed = std::isfinite(similarity.meanDistance) && similarity.meanDistance > searchRadius;
+                    const bool directionFailed = std::isfinite(similarity.meanDirectionCost) && similarity.meanDirectionCost > kMaxMeanDirectionCost;
+                    const double distanceRatio = distanceFailed ? similarity.meanDistance / searchRadius : 1.0;
+                    const double directionRatio = directionFailed ? similarity.meanDirectionCost / kMaxMeanDirectionCost : 1.0;
+                    const double failureScore = std::max(distanceRatio, directionRatio);
+                    if (failureScore < bestInvalidScore[mapIndex])
+                    {
+                        bestInvalidScore[mapIndex] = failureScore;
+                        if (distanceFailed && directionFailed)
+                        {
+                            bestInvalidType[mapIndex] = "distance+direction";
+                            bestInvalidDetail[mapIndex] =
+                                "distance " + DiagnosticNumber(similarity.meanDistance) + " > " + DiagnosticNumber(searchRadius) +
+                                ", direction " + DiagnosticNumber(similarity.meanDirectionCost) + " > " + DiagnosticNumber(kMaxMeanDirectionCost);
+                        }
+                        else if (distanceFailed)
+                        {
+                            bestInvalidType[mapIndex] = "distance";
+                            bestInvalidDetail[mapIndex] = "distance " + DiagnosticNumber(similarity.meanDistance) + " > " + DiagnosticNumber(searchRadius) + " px";
+                        }
+                        else if (directionFailed)
+                        {
+                            bestInvalidType[mapIndex] = "direction";
+                            bestInvalidDetail[mapIndex] = "direction " + DiagnosticNumber(similarity.meanDirectionCost) + " > " + DiagnosticNumber(kMaxMeanDirectionCost);
+                        }
+                        else
+                        {
+                            bestInvalidType[mapIndex] = "similarity";
+                            bestInvalidDetail[mapIndex] = "shape metrics are invalid";
+                        }
+                    }
+                }
+            }
+
+            const size_t diagnosticIndex = projectedDiagnosticIndices[mapIndex];
+            if (!candidatesByMap[mapIndex].empty())
+            {
+                if (!evaluatedSimilarity[mapIndex])
+                    setDiagnostic(diagnosticIndex, 2, "assignment", "candidate Bezier curves are already associated");
+                else if (!hasValidSimilarity[mapIndex])
+                    setDiagnostic(diagnosticIndex, 2,
+                                  bestInvalidType[mapIndex].empty() ? "similarity" : bestInvalidType[mapIndex],
+                                  bestInvalidDetail[mapIndex].empty() ? "no candidate passed the shape thresholds" : bestInvalidDetail[mapIndex]);
+                else if (bestValidCost[mapIndex] >= unmatchedCost)
+                    setDiagnostic(diagnosticIndex, 3, "cost", "cost " + DiagnosticNumber(bestValidCost[mapIndex]) + " >= " + DiagnosticNumber(unmatchedCost));
+                else
+                    setDiagnostic(diagnosticIndex, 4, "assignment", "a competing MapCurve won the global assignment");
             }
         }
 
@@ -711,18 +905,26 @@ namespace ORB_SLAM2
                 continue;
 
             double alternativeCost = kInvalidCost;
+            size_t alternativeMapIndex = mapCount;
             for (size_t alternativeMap = 0; alternativeMap < mapCount; ++alternativeMap)
             {
                 if (alternativeMap == mapIndex)
                     continue;
                 const CurveSimilarity &alternative = similarities[row][alternativeMap];
-                if (alternative.valid)
+                if (alternative.valid && alternative.cost < alternativeCost)
                 {
-                    alternativeCost = std::min(alternativeCost, alternative.cost);
+                    alternativeCost = alternative.cost;
+                    alternativeMapIndex = alternativeMap;
                 }
             }
-            if (alternativeCost < kInvalidCost && chosen.cost > 0.90 * alternativeCost)
+            if (alternativeMapIndex < mapCount && chosen.cost > alternativeCost)
             {
+                MapCurve *pAlternativeMapCurve = projectedCurves[alternativeMapIndex].pMapCurve;
+                setDiagnostic(projectedDiagnosticIndices[mapIndex], 5, "ambiguity",
+                              "cost " + DiagnosticNumber(chosen.cost) +
+                                  " > alternative MapCurve ID " +
+                                  (pAlternativeMapCurve ? std::to_string(pAlternativeMapCurve->mnId) : std::string("unknown")) +
+                                  " cost " + DiagnosticNumber(alternativeCost));
                 continue;
             }
 
@@ -779,6 +981,7 @@ namespace ORB_SLAM2
         }
 
         BuildFixedSampleCorrespondences(currentFrame);
+        finalizeDiagnostics();
         return matchCount;
     }
 } // namespace ORB_SLAM2
