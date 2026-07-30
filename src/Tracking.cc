@@ -659,7 +659,10 @@ namespace ORB_SLAM2
                 mlpTemporalPoints.clear();
 
                 // Check if we need to insert a new keyframe
-                if (NeedNewKeyFrame())
+                bool bNeedKF = NeedNewKeyFrame();
+                std::cout << "NeedNewKeyFrame: " << bNeedKF << " " << mCurrentFrame.mnId % 10 << std::endl;
+
+                if (bNeedKF)
                     CreateNewKeyFrameWithCurves();
 
                 // We allow points with high innovation (considererd outliers by the Huber Function)
@@ -1510,6 +1513,10 @@ namespace ORB_SLAM2
 
     bool Tracking::NeedNewKeyFrame()
     {
+
+        if (!(mCurrentFrame.mnId % 15))
+            return true;
+
         if (mbOnlyTracking)
             return false;
 
@@ -1676,6 +1683,7 @@ namespace ORB_SLAM2
 
     void Tracking::CreateNewKeyFrameWithCurves()
     {
+        std::cout << "CreateNewKeyFrameWithCurves: " << mCurrentFrame.mnId << std::endl;
         if (!mpLocalMapper->SetNotStop(true))
             return;
 

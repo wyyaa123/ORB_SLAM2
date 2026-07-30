@@ -293,12 +293,12 @@ namespace ORB_SLAM2
                 pMC->SetBadFlag();
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 5 && pMC->Observations() <= 4)
+            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 2 && pMC->Observations() <= 2)
             {
                 pMC->SetBadFlag();
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 5)
+            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 3)
                 lit = mlpRecentAddedMapCurves.erase(lit);
             else
                 lit++;

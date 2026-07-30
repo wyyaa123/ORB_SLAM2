@@ -74,8 +74,8 @@ Viewer.ViewpointF: 500
 Curve.UseCurve: 1
 Curve.BezierFitter: 1
 Curve.MinDepth: 0.02
-Curve.MaxDepth: 4.0
-Curve.ValidRatio: 0.1
+Curve.MaxDepth: 3.0
+Curve.ValidRatio: 0.7
 # 沿曲线采样顺序使用奇数窗口做深度中值滤波。
 Curve.DepthMedianWindow: 5
 # 孤立深度尖峰判定阈值：绝对阈值（米）和相对阈值取较大者。
