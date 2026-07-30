@@ -21,6 +21,7 @@
 #include "LocalMapping.h"
 #include "LoopClosing.h"
 #include "ORBmatcher.h"
+#include "Curve/CurveGeometry.h"
 #include "Curve/CurveMatcher.h"
 #include "Optimizer.h"
 #include <unistd.h>
@@ -280,25 +281,42 @@ namespace ORB_SLAM2
     {
         list<MapCurve *>::iterator lit = mlpRecentAddedMapCurves.begin();
         const unsigned long int nCurrentKFid = mpCurrentKeyFrame->mnId;
+        const int qualityCheckAge =
+            std::max(0, mCurveConfig->geometryQualityCullingMinAge);
+        const int recentCurveLifetime =
+            std::max(5, qualityCheckAge);
 
         while (lit != mlpRecentAddedMapCurves.end())
         {
             MapCurve *pMC = *lit;
+            const int curveAge = static_cast<int>(nCurrentKFid) -
+                                 static_cast<int>(pMC->mnFirstKFid);
             if (pMC->isBad())
             {
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (pMC->GetFoundRatio() < 0.67f)
+            else if (pMC->GetFoundRatio() < 0.50f)
             {
                 pMC->SetBadFlag();
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 2 && pMC->Observations() <= 2)
+            else if (curveAge >= 2 && pMC->Observations() <= 2)
             {
                 pMC->SetBadFlag();
                 lit = mlpRecentAddedMapCurves.erase(lit);
             }
-            else if (((int)nCurrentKFid - (int)pMC->mnFirstKFid) >= 3)
+            else if (curveAge >= 2 && pMC->GetCurvePoints().size() < 3)
+            {
+                pMC->SetBadFlag();
+                lit = mlpRecentAddedMapCurves.erase(lit);
+            }
+            else if (curveAge >= qualityCheckAge &&
+                     !IsCurveGeometryAcceptable(pMC->GetCurvePoints(), *mCurveConfig))
+            {
+                pMC->SetBadFlag();
+                lit = mlpRecentAddedMapCurves.erase(lit);
+            }
+            else if (curveAge >= recentCurveLifetime)
                 lit = mlpRecentAddedMapCurves.erase(lit);
             else
                 lit++;

@@ -210,10 +210,17 @@ namespace ORB_SLAM2
         mvpMapPoints[idx] = pMP;
     }
 
-    void KeyFrame::AddMapCurve(MapCurve *pMC, const size_t &idx)
+    bool KeyFrame::AddMapCurve(MapCurve *pMC, const size_t &idx)
     {
-        unique_lock<mutex> lock(mMutexFeatures);
+        unique_lock<mutex> connectionLock(mMutexConnections);
+        unique_lock<mutex> featureLock(mMutexFeatures);
+        if (mbBad || idx >= mvpMapCurves.size() ||
+            (mvpMapCurves[idx] && mvpMapCurves[idx] != pMC))
+        {
+            return false;
+        }
         mvpMapCurves[idx] = pMC;
+        return true;
     }
 
     std::vector<MapCurve *> KeyFrame::GetMapCurveMatches()
@@ -222,17 +229,21 @@ namespace ORB_SLAM2
         return mvpMapCurves;
     }
 
-    void ORB_SLAM2::KeyFrame::EraseMapCurveMatch(const size_t &idx)
+    bool KeyFrame::ReplaceMapCurveMatch(
+        const size_t &idx,
+        MapCurve *pExpected,
+        MapCurve *pReplacement)
     {
-        unique_lock<mutex> lock(mMutexFeatures);
-        mvpMapCurves[idx] = static_cast<MapCurve *>(NULL);
-    }
-
-    void KeyFrame::ReplaceMapCurveMatch(const size_t &idx, MapCurve *pMC)
-    {
-        unique_lock<mutex> lock(mMutexFeatures);
-        if (idx < mvpMapCurves.size())
-            mvpMapCurves[idx] = pMC;
+        unique_lock<mutex> connectionLock(mMutexConnections);
+        unique_lock<mutex> featureLock(mMutexFeatures);
+        if (idx >= mvpMapCurves.size() ||
+            mvpMapCurves[idx] != pExpected ||
+            (pReplacement && mbBad))
+        {
+            return false;
+        }
+        mvpMapCurves[idx] = pReplacement;
+        return true;
     }
 
     void KeyFrame::EraseMapPointMatch(const size_t &idx)
@@ -501,6 +512,9 @@ namespace ORB_SLAM2
 
     void KeyFrame::SetBadFlag()
     {
+        map<KeyFrame *, int> connectedKeyFrames;
+        vector<MapPoint *> matchedMapPoints;
+        vector<MapCurve *> matchedMapCurves;
         {
             unique_lock<mutex> lock(mMutexConnections);
             if (mnId == 0)
@@ -510,17 +524,30 @@ namespace ORB_SLAM2
                 mbToBeErased = true;
                 return;
             }
+            if (mbBad)
+                return;
+
+            // Publish the terminal state before taking the feature snapshot so
+            // no new MapCurve association can enter while this keyframe is
+            // being detached.
+            mbBad = true;
+            connectedKeyFrames = mConnectedKeyFrameWeights;
+        }
+        {
+            unique_lock<mutex> lock(mMutexFeatures);
+            matchedMapPoints = mvpMapPoints;
+            matchedMapCurves = mvpMapCurves;
         }
 
-        for (map<KeyFrame *, int>::iterator mit = mConnectedKeyFrameWeights.begin(), mend = mConnectedKeyFrameWeights.end(); mit != mend; mit++)
+        for (map<KeyFrame *, int>::iterator mit = connectedKeyFrames.begin(), mend = connectedKeyFrames.end(); mit != mend; mit++)
             mit->first->EraseConnection(this);
 
-        for (size_t i = 0; i < mvpMapPoints.size(); i++)
-            if (mvpMapPoints[i])
-                mvpMapPoints[i]->EraseObservation(this);
+        for (MapPoint *pMP : matchedMapPoints)
+            if (pMP)
+                pMP->EraseObservation(this);
 
         set<MapCurve *> observedMapCurves;
-        for (MapCurve *pMC : mvpMapCurves)
+        for (MapCurve *pMC : matchedMapCurves)
         {
             if (pMC && observedMapCurves.insert(pMC).second)
                 pMC->EraseObservation(this);
@@ -532,6 +559,10 @@ namespace ORB_SLAM2
 
             mConnectedKeyFrameWeights.clear();
             mvpOrderedConnectedKeyFrames.clear();
+            std::fill(
+                mvpMapCurves.begin(),
+                mvpMapCurves.end(),
+                static_cast<MapCurve *>(NULL));
 
             // Update Spanning Tree
             set<KeyFrame *> sParentCandidates;

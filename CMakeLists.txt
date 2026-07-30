@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.8)
 project(ORB_SLAM2)
 
+include(CTest)
+
 IF(NOT CMAKE_BUILD_TYPE)
   SET(CMAKE_BUILD_TYPE Release)
 ENDIF()
@@ -77,6 +79,7 @@ src/Initializer.cc
 src/Viewer.cc
 src/Curve/BezierCurve.cc
 src/Curve/CurveConfig.cc
+src/Curve/CurveGeometry.cc
 src/Curve/EdgeCluster.cc
 src/Curve/EdgeExtracter.cc
 src/Curve/MapCurve.cc
@@ -131,3 +134,14 @@ target_link_libraries(mono_kitti ${PROJECT_NAME})
 add_executable(mono_euroc
 Examples/Monocular/mono_euroc.cc)
 target_link_libraries(mono_euroc ${PROJECT_NAME})
+
+if(BUILD_TESTING)
+  add_executable(curve_geometry_tests
+  tests/CurveGeometryTests.cc)
+  target_link_libraries(curve_geometry_tests ${PROJECT_NAME})
+  set_target_properties(curve_geometry_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests)
+  add_test(
+    NAME curve_geometry
+    COMMAND curve_geometry_tests ${PROJECT_SOURCE_DIR}/tests/curve_geometry_test.yaml)
+endif()

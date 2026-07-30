@@ -423,6 +423,36 @@ namespace ORB_SLAM2
         return fittedCurves;
     }
 
+    BezierCurve BezierCurveFitter::fitSingleSegment(
+        const std::vector<orderedEdgePoint> &edge,
+        const std::size_t edgeChainId) const
+    {
+        BezierCurve bestCurve;
+        bestCurve.edgeChainId = edgeChainId;
+        if (edge.size() < 2)
+            return bestCurve;
+
+        const std::vector<double> parameters = chordLengthParameters(edge);
+        const int maximumOrder = std::min(3, static_cast<int>(edge.size()) - 1);
+        for (int order = 1; order <= maximumOrder; ++order)
+        {
+            BezierCurve candidate = fitWithEndPoints(edge, parameters, order);
+            candidate.edgeChainId = edgeChainId;
+            if (candidate.controlPoints.empty())
+                continue;
+
+            bestCurve = candidate;
+            const std::vector<double> residuals =
+                computeResiduals(candidate.controlPoints, edge, parameters);
+            if (!residuals.empty() &&
+                *std::max_element(residuals.begin(), residuals.end()) <= rho_p_)
+            {
+                break;
+            }
+        }
+        return bestCurve;
+    }
+
     BezierCurve BezierCurveFitter::fitWithEndPoints(
         const std::vector<orderedEdgePoint> &edge,
         const std::vector<double> &parameters,

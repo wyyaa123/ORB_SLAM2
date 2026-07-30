@@ -29,6 +29,7 @@ namespace ORB_SLAM2
         int Observations();
 
         void AddObservation(KeyFrame *pKF, size_t idx);
+        bool AssociateWithKeyFrame(KeyFrame *pKF, size_t idx);
         void EraseObservation(KeyFrame *pKF);
 
         int GetIndexInKeyFrame(KeyFrame *pKF);
@@ -75,6 +76,7 @@ namespace ORB_SLAM2
         int mnFound;
         
         bool mbBad;
+        bool mbReplacementInProgress;
         MapCurve *mpReplaced;
 
         Map *mpMap;
@@ -83,9 +85,13 @@ namespace ORB_SLAM2
         std::mutex mMutexFeatures;
 
     private:
+        bool AssociateWithKeyFrameLocked(
+            KeyFrame *pKF,
+            size_t idx,
+            MapCurve *pExpectedCurve);
+        void SetBadFlagLocked();
         static bool ProjectWorldPoint(const cv::Point3d &worldPoint, const Frame &frame, cv::Point2d &imagePoint);
         static size_t FindNearestPointIndex(const cv::Point2d &queryPoint, const std::vector<cv::Point2d> &points);
-        void SmoothGeometry(const CurveConfigPtr &curveConfig);
     };
 }
 

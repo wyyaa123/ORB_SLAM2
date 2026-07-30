@@ -18,6 +18,12 @@ namespace ORB_SLAM2
         // number of fitted segments before depth filtering.
         std::size_t segmentIndex = 0;
         std::size_t segmentCount = 1;
+        // Position of a depth-continuous fragment inside the fitted segment.
+        std::size_t depthFragmentIndex = 0;
+        // Depth-continuous group inside edgeChainId. Fragments separated by
+        // invalid depth or a large 3-D gap must never be re-attached solely
+        // because they originated from the same 2-D edge.
+        std::size_t continuityGroupId = -1;
 
         // 每条边缘可能有多段Bezier曲线，每段曲线由一组控制点定义
         std::vector<orderedEdgePoint> controlPoints; 
@@ -25,6 +31,16 @@ namespace ORB_SLAM2
         std::vector<orderedEdgePoint> sampledPoints;
 
         bool hasEdgeChain() const { return edgeChainId != -1; }
+        bool hasContinuityGroup() const { return continuityGroupId != -1; }
+        bool isDepthDisconnectedFrom(const BezierCurve &other) const
+        {
+            return hasEdgeChain() &&
+                   other.hasEdgeChain() &&
+                   edgeChainId == other.edgeChainId &&
+                   hasContinuityGroup() &&
+                   other.hasContinuityGroup() &&
+                   continuityGroupId != other.continuityGroupId;
+        }
 
         cv::Point2d Evaluate(double parameter) const;
         cv::Point2d EvaluateDerivative(double parameter, int derivativeOrder = 1) const;
@@ -41,6 +57,7 @@ namespace ORB_SLAM2
         explicit BezierCurveFitter(double rho_p = 1.0, std::size_t minSplitPoints = 10);
 
         std::vector<BezierCurve> fitAdaptive(const std::vector<orderedEdgePoint> &points, std::size_t edgeChainId = -1) const;
+        BezierCurve fitSingleSegment(const std::vector<orderedEdgePoint> &points, std::size_t edgeChainId = -1) const;
 
     private:
         std::vector<double> chordLengthParameters(const std::vector<orderedEdgePoint> &points) const;

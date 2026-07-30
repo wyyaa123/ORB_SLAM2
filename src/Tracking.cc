@@ -24,6 +24,7 @@
 #include <opencv2/features2d/features2d.hpp>
 
 #include "ORBmatcher.h"
+#include "Curve/CurveGeometry.h"
 #include "Curve/CurveMatcher.h"
 #include "FrameDrawer.h"
 #include "Converter.h"
@@ -660,7 +661,6 @@ namespace ORB_SLAM2
 
                 // Check if we need to insert a new keyframe
                 bool bNeedKF = NeedNewKeyFrame();
-                std::cout << "NeedNewKeyFrame: " << bNeedKF << " " << mCurrentFrame.mnId % 10 << std::endl;
 
                 if (bNeedKF)
                     CreateNewKeyFrameWithCurves();
@@ -806,9 +806,23 @@ namespace ORB_SLAM2
             for (int i = 0; i < mCurrentFrame.NC; i++)
             {
                 std::vector<cv::Point3d> unprojectedPoints = mCurrentFrame.UnprojectCurve(i);
+                if (!IsCurveGeometryAcceptable(unprojectedPoints, *mCurveConfig))
+                {
+                    MapCurve *pRejectedCurve =
+                        pKFini->GetMapCurve(i);
+                    pKFini->ReplaceMapCurveMatch(
+                        i, pRejectedCurve, NULL);
+                    mCurrentFrame.mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
+                    continue;
+                }
                 MapCurve *pNewMP = new MapCurve(unprojectedPoints, pKFini, mpMap);
-                pNewMP->AddObservation(pKFini, i);
-                pKFini->AddMapCurve(pNewMP, i);
+                if (!pNewMP->AssociateWithKeyFrame(pKFini, i))
+                {
+                    delete pNewMP;
+                    mCurrentFrame.mvpMapCurves[i] =
+                        static_cast<MapCurve *>(NULL);
+                    continue;
+                }
                 mpMap->AddMapCurve(pNewMP);
 
                 mCurrentFrame.mvpMapCurves[i] = pNewMP;
@@ -1514,7 +1528,7 @@ namespace ORB_SLAM2
     bool Tracking::NeedNewKeyFrame()
     {
 
-        if (!(mCurrentFrame.mnId % 15))
+        if (!(mCurrentFrame.mnId % 30))
             return true;
 
         if (mbOnlyTracking)
@@ -1770,17 +1784,40 @@ namespace ORB_SLAM2
                 if (bCreateNew)
                 {
                     std::vector<cv::Point3d> unprojectedPoints = mCurrentFrame.UnprojectCurve(i);
+                    if (!IsCurveGeometryAcceptable(unprojectedPoints, *mCurveConfig))
+                    {
+                        MapCurve *pRejectedCurve =
+                            pKF->GetMapCurve(i);
+                        pKF->ReplaceMapCurveMatch(
+                            i, pRejectedCurve, NULL);
+                        mCurrentFrame.mvpMapCurves[i] = static_cast<MapCurve *>(NULL);
+                        continue;
+                    }
+                    MapCurve *pPreviousCurve =
+                        pKF->GetMapCurve(i);
+                    pKF->ReplaceMapCurveMatch(
+                        i, pPreviousCurve, NULL);
                     pMC = new MapCurve(std::move(unprojectedPoints), pKF, mpMap);
-                    pMC->AddObservation(pKF, i);
-                    pKF->AddMapCurve(pMC, i);
+                    if (!pMC->AssociateWithKeyFrame(pKF, i))
+                    {
+                        delete pMC;
+                        mCurrentFrame.mvpMapCurves[i] =
+                            static_cast<MapCurve *>(NULL);
+                        continue;
+                    }
                     mpMap->AddMapCurve(pMC);
 
                     mCurrentFrame.mvpMapCurves[i] = pMC;
                 }
                 else
                 {
-                    pMC->AddObservation(pKF, i);
-                    pKF->AddMapCurve(pMC, i);
+                    if (!pMC->AssociateWithKeyFrame(pKF, i))
+                    {
+                        pKF->ReplaceMapCurveMatch(
+                            i, pMC, NULL);
+                        mCurrentFrame.mvpMapCurves[i] =
+                            static_cast<MapCurve *>(NULL);
+                    }
                 }
             }
         }

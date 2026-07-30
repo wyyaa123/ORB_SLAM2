@@ -84,11 +84,13 @@ namespace ORB_SLAM2
 
         // MapPoint observation functions
         void AddMapPoint(MapPoint *pMP, const size_t &idx);
-        void AddMapCurve(MapCurve *pMC, const size_t &idx);
+        bool AddMapCurve(MapCurve *pMC, const size_t &idx);
         std::vector<MapCurve *> GetMapCurveMatches();
         void EraseMapPointMatch(const size_t &idx);
-        void EraseMapCurveMatch(const size_t &idx);
-        void ReplaceMapCurveMatch(const size_t &idx, MapCurve *pMC);
+        bool ReplaceMapCurveMatch(
+            const size_t &idx,
+            MapCurve *pExpected,
+            MapCurve *pReplacement);
         void EraseMapPointMatch(MapPoint *pMP);
         void ReplaceMapPointMatch(const size_t &idx, MapPoint *pMP);
         std::set<MapPoint *> GetMapPoints();

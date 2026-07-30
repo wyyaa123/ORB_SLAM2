@@ -445,6 +445,17 @@ namespace ORB_SLAM2
         const int candidateSpan = std::max(1, candidateSimilarity.maxMapIndex - candidateSimilarity.minMapIndex + 1);
         const int maximumGap = std::max(4, static_cast<int>(0.25f * projectedMapSampleCount));
 
+        // A depth discontinuity on the same source edge is a hard conflict.
+        // Check it before ordinary endpoint compatibility so a fragment from a
+        // different edge cannot indirectly bridge the two depth groups.
+        for (const AcceptedFragment &accepted : acceptedFragments)
+        {
+            const BezierCurve &acceptedCurve =
+                frame.mvBezierCurves[accepted.curveIndex];
+            if (candidateCurve.isDepthDisconnectedFrom(acceptedCurve))
+                return false;
+        }
+
         for (const AcceptedFragment &accepted : acceptedFragments)
         {
             const CurveSimilarity &acceptedSimilarity = accepted.similarity;
@@ -1029,7 +1040,8 @@ namespace ORB_SLAM2
 
     int CurveMatcher::Fuse(KeyFrame *pKF, const std::vector<MapCurve *> &vpMapCurves)
     {
-        if (!mCurveConfig || !pKF || pKF->isBad() || pKF->mvBezierCurves.empty() || vpMapCurves.empty())
+        if (!mCurveConfig || !pKF || pKF->isBad() ||
+            pKF->mvBezierCurves.empty() || vpMapCurves.empty())
             return 0;
 
         const float searchRadius = std::max(1.0f, mCurveConfig->matchSearchRadius);
@@ -1154,21 +1166,21 @@ namespace ORB_SLAM2
             MapCurve *pExisting = pKF->GetMapCurve(curveIndex);
             if (pExisting && pExisting->isBad())
             {
-                pKF->EraseMapCurveMatch(curveIndex);
+                pKF->ReplaceMapCurveMatch(
+                    curveIndex, pExisting, NULL);
                 pExisting = static_cast<MapCurve *>(NULL);
             }
 
             if (!pExisting)
             {
-                pKF->AddMapCurve(pCandidate, curveIndex);
-                pCandidate->AddObservation(pKF, curveIndex);
-                ++fusedCount;
+                if (pCandidate->AssociateWithKeyFrame(pKF, curveIndex))
+                    ++fusedCount;
                 continue;
             }
 
             if (pExisting == pCandidate)
             {
-                pCandidate->AddObservation(pKF, curveIndex);
+                pCandidate->AssociateWithKeyFrame(pKF, curveIndex);
                 continue;
             }
 

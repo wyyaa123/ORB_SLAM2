@@ -1,4 +1,5 @@
 #include "Curve/MapCurve.h"
+#include "Curve/CurveGeometry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,7 +12,7 @@ namespace ORB_SLAM2
     long unsigned int MapCurve::nNextId = 0;
     std::mutex MapCurve::mGlobalMutex;
 
-    MapCurve::MapCurve(std::vector<cv::Point3d> curvePoints, KeyFrame *pReferenceKF, Map *pMap) : mnFirstKFid(pReferenceKF->mnId), mnFirstFrame(pReferenceKF->mnFrameId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mnLastFrameSeen(0), mnBALocalForKF(0), mnFuseCandidateForKF(0), mpRefKF(pReferenceKF), mnVisible(1), mnFound(1), mbBad(false), mpReplaced(NULL), mpMap(pMap)
+    MapCurve::MapCurve(std::vector<cv::Point3d> curvePoints, KeyFrame *pReferenceKF, Map *pMap) : mnFirstKFid(pReferenceKF->mnId), mnFirstFrame(pReferenceKF->mnFrameId), nObs(0), mbTrackInView(false), mnTrackReferenceForFrame(0), mnLastFrameSeen(0), mnBALocalForKF(0), mnFuseCandidateForKF(0), mpRefKF(pReferenceKF), mnVisible(1), mnFound(1), mbBad(false), mbReplacementInProgress(false), mpReplaced(NULL), mpMap(pMap)
     {
         mCurvePoints = std::move(curvePoints);
         mCurvePointFusionWeights.assign(mCurvePoints.size(), 1);
@@ -24,26 +25,93 @@ namespace ORB_SLAM2
     // 在关键帧pKF中的第idx个曲线特征
     void MapCurve::AddObservation(KeyFrame *pKF, size_t idx)
     {
-        unique_lock<mutex> lock(mMutexFeatures);
+        AssociateWithKeyFrame(pKF, idx);
+    }
+
+    bool MapCurve::AssociateWithKeyFrame(KeyFrame *pKF, const size_t idx)
+    {
+        if (!pKF)
+            return false;
+
+        unique_lock<mutex> lifecycleLock(mGlobalMutex);
+        MapCurve *pExpectedCurve = pKF->GetMapCurve(idx);
+        if (pExpectedCurve && pExpectedCurve != this)
+            return false;
+        return AssociateWithKeyFrameLocked(
+            pKF, idx, pExpectedCurve);
+    }
+
+    bool MapCurve::AssociateWithKeyFrameLocked(
+        KeyFrame *pKF,
+        const size_t idx,
+        MapCurve *pExpectedCurve)
+    {
+        if (!pKF)
+            return false;
+
+        unique_lock<mutex> featureLock(mMutexFeatures);
+        if (mbBad)
+        {
+            featureLock.unlock();
+            if (pExpectedCurve == this)
+                pKF->ReplaceMapCurveMatch(idx, this, NULL);
+            return false;
+        }
+
         std::vector<size_t> &indices = mObservations[pKF];
-        if (std::find(indices.begin(), indices.end(), idx) != indices.end())
-            return;
-        if (indices.empty())
-            ++nObs;
-        indices.push_back(idx);
-        std::sort(indices.begin(), indices.end());
+        if (std::find(indices.begin(), indices.end(), idx) ==
+            indices.end())
+        {
+            if (indices.empty())
+                ++nObs;
+            indices.push_back(idx);
+            std::sort(indices.begin(), indices.end());
+        }
+
+        const bool slotUpdated =
+            pExpectedCurve && pExpectedCurve != this
+                ? pKF->ReplaceMapCurveMatch(
+                      idx, pExpectedCurve, this)
+                : pKF->AddMapCurve(this, idx);
+        if (slotUpdated)
+            return true;
+
+        const auto observation = mObservations.find(pKF);
+        if (observation != mObservations.end())
+        {
+            std::vector<size_t> &observationIndices =
+                observation->second;
+            observationIndices.erase(
+                std::remove(
+                    observationIndices.begin(),
+                    observationIndices.end(),
+                    idx),
+                observationIndices.end());
+            if (observationIndices.empty())
+            {
+                mObservations.erase(observation);
+                --nObs;
+            }
+        }
+        return false;
     }
 
     void MapCurve::EraseObservation(KeyFrame *pKF)
     {
+        if (!pKF)
+            return;
+
+        unique_lock<mutex> lifecycleLock(mGlobalMutex);
         bool bBad = false;
+        vector<size_t> erasedIndices;
         {
             unique_lock<mutex> lock(mMutexFeatures);
-            if (mObservations.count(pKF))
+            const auto observation = mObservations.find(pKF);
+            if (observation != mObservations.end())
             {
+                erasedIndices = observation->second;
                 nObs--;
-
-                mObservations.erase(pKF);
+                mObservations.erase(observation);
                 if (mpRefKF == pKF)
                     mpRefKF = mObservations.empty() ? static_cast<KeyFrame *>(NULL) : mObservations.begin()->first;
 
@@ -52,8 +120,11 @@ namespace ORB_SLAM2
             }
         }
 
+        for (const size_t curveIndex : erasedIndices)
+            pKF->ReplaceMapCurveMatch(curveIndex, this, NULL);
+
         if (bBad)
-            SetBadFlag();
+            SetBadFlagLocked();
     }
 
     MapCurve *MapCurve::GetReplaced()
@@ -123,31 +194,6 @@ namespace ORB_SLAM2
         return nearestIndex;
     }
 
-    void MapCurve::SmoothGeometry(const CurveConfigPtr &curveConfig)
-    {
-        if (!curveConfig || curveConfig->geometrySmoothingWeight <= 0.0f || mCurvePoints.size() < 3)
-            return;
-
-        const double smoothingWeight = curveConfig->geometrySmoothingWeight;
-        std::vector<cv::Point3d> smoothedPoints = mCurvePoints;
-        for (size_t pointIndex = 1; pointIndex + 1 < mCurvePoints.size(); ++pointIndex)
-        {
-            const cv::Point3d &previousPoint = mCurvePoints[pointIndex - 1];
-            const cv::Point3d &currentPoint = mCurvePoints[pointIndex];
-            const cv::Point3d &nextPoint = mCurvePoints[pointIndex + 1];
-            if (cv::norm(currentPoint - previousPoint) > curveConfig->extensionMax3DGap || cv::norm(nextPoint - currentPoint) > curveConfig->extensionMax3DGap)
-                continue;
-
-            const cv::Point3d localMidpoint = (previousPoint + nextPoint) * 0.5;
-            const cv::Point3d correction = localMidpoint - currentPoint;
-            if (cv::norm(correction) > curveConfig->fusionMax3DDistance)
-                continue;
-
-            smoothedPoints[pointIndex] = currentPoint + correction * smoothingWeight;
-        }
-        mCurvePoints.swap(smoothedPoints);
-    }
-
     size_t MapCurve::ExtendWithObservation(const Frame &frame, const size_t observedCurveIndex, const CurveConfigPtr &curveConfig)
     {
         if (!curveConfig || observedCurveIndex >= frame.mvBezierCurves.size() || frame.mTcw.empty())
@@ -165,15 +211,23 @@ namespace ORB_SLAM2
         if (observedWorldPoints.size() < 2 || observedWorldPoints.size() != observedImagePoints.size())
             return 0;
 
+        unique_lock<mutex> featureLock(mMutexFeatures);
+        if (mbBad || mbReplacementInProgress)
+            return 0;
         unique_lock<mutex> lock(mMutexPos);
         if (mCurvePoints.size() < 2)
         {
+            if (!IsCurveGeometryAcceptable(observedWorldPoints, *curveConfig))
+                return 0;
             mCurvePoints = observedWorldPoints;
             mCurvePointFusionWeights.assign(mCurvePoints.size(), 1);
             return observedWorldPoints.size();
         }
-        if (mCurvePointFusionWeights.size() != mCurvePoints.size())
-            mCurvePointFusionWeights.assign(mCurvePoints.size(), 1);
+
+        std::vector<cv::Point3d> candidatePoints = mCurvePoints;
+        std::vector<unsigned int> candidateWeights = mCurvePointFusionWeights;
+        if (candidateWeights.size() != candidatePoints.size())
+            candidateWeights.assign(candidatePoints.size(), 1);
 
         std::vector<cv::Point2d> projectedMapPoints;
         std::vector<size_t> projectedMapIndices;
@@ -225,15 +279,15 @@ namespace ORB_SLAM2
 
             const size_t mapPointIndex = projectedMapIndices[projectedPointIndex];
             const double pixelDistance = cv::norm(projectedMapPoints[projectedPointIndex] - orientedImagePoints[observedPointIndex]);
-            const double spatialDistance = cv::norm(mCurvePoints[mapPointIndex] - orientedWorldPoints[observedPointIndex]);
+            const double spatialDistance = cv::norm(candidatePoints[mapPointIndex] - orientedWorldPoints[observedPointIndex]);
             if (pixelDistance > curveConfig->fusionMaxPixelDistance || spatialDistance > curveConfig->fusionMax3DDistance)
                 continue;
 
-            const unsigned int fusionWeight = std::min(mCurvePointFusionWeights[mapPointIndex], static_cast<unsigned int>(curveConfig->maximumFusionWeight));
+            const unsigned int fusionWeight = std::min(candidateWeights[mapPointIndex], static_cast<unsigned int>(curveConfig->maximumFusionWeight));
             const double observationWeight = 1.0 / static_cast<double>(fusionWeight + 1);
-            mCurvePoints[mapPointIndex] = mCurvePoints[mapPointIndex] * (1.0 - observationWeight) + orientedWorldPoints[observedPointIndex] * observationWeight;
-            if (mCurvePointFusionWeights[mapPointIndex] < static_cast<unsigned int>(curveConfig->maximumFusionWeight))
-                ++mCurvePointFusionWeights[mapPointIndex];
+            candidatePoints[mapPointIndex] = candidatePoints[mapPointIndex] * (1.0 - observationWeight) + orientedWorldPoints[observedPointIndex] * observationWeight;
+            if (candidateWeights[mapPointIndex] < static_cast<unsigned int>(curveConfig->maximumFusionWeight))
+                ++candidateWeights[mapPointIndex];
             previousFusedObservationIndex = observedPointIndex;
             hasPreviousFusedObservation = true;
             ++fusedPointCount;
@@ -259,7 +313,7 @@ namespace ORB_SLAM2
         {
             const size_t lastPrefixIndex = firstOverlapIndex - 1;
             const double pixelGap = cv::norm(orientedImagePoints[lastPrefixIndex] - projectedMapPoints.front());
-            const double spatialGap = cv::norm(orientedWorldPoints[lastPrefixIndex] - mCurvePoints.front());
+            const double spatialGap = cv::norm(orientedWorldPoints[lastPrefixIndex] - candidatePoints.front());
             const double joinDirectionCosine = directionCosine(orientedImagePoints[lastPrefixIndex - 1], orientedImagePoints[lastPrefixIndex], projectedMapPoints[0], projectedMapPoints[1]);
             acceptPrefix = pixelGap <= curveConfig->extensionMaxPixelGap && spatialGap <= curveConfig->extensionMax3DGap && joinDirectionCosine >= curveConfig->minimumJoinDirectionCosine;
         }
@@ -269,7 +323,7 @@ namespace ORB_SLAM2
         {
             const size_t firstSuffixIndex = lastOverlapIndex + 1;
             const double pixelGap = cv::norm(projectedMapPoints.back() - orientedImagePoints[firstSuffixIndex]);
-            const double spatialGap = cv::norm(mCurvePoints.back() - orientedWorldPoints[firstSuffixIndex]);
+            const double spatialGap = cv::norm(candidatePoints.back() - orientedWorldPoints[firstSuffixIndex]);
             const double joinDirectionCosine = directionCosine(projectedMapPoints[projectedMapPoints.size() - 2], projectedMapPoints.back(), orientedImagePoints[firstSuffixIndex], orientedImagePoints[firstSuffixIndex + 1]);
             acceptSuffix = pixelGap <= curveConfig->extensionMaxPixelGap && spatialGap <= curveConfig->extensionMax3DGap && joinDirectionCosine >= curveConfig->minimumJoinDirectionCosine;
         }
@@ -279,24 +333,29 @@ namespace ORB_SLAM2
 
         std::vector<cv::Point3d> extendedCurve;
         std::vector<unsigned int> extendedFusionWeights;
-        extendedCurve.reserve(prefixCount + mCurvePoints.size() + suffixCount);
-        extendedFusionWeights.reserve(prefixCount + mCurvePointFusionWeights.size() + suffixCount);
+        extendedCurve.reserve(prefixCount + candidatePoints.size() + suffixCount);
+        extendedFusionWeights.reserve(prefixCount + candidateWeights.size() + suffixCount);
         if (prefixCount > 0)
         {
             extendedCurve.insert(extendedCurve.end(), orientedWorldPoints.begin(), orientedWorldPoints.begin() + firstOverlapIndex);
             extendedFusionWeights.insert(extendedFusionWeights.end(), prefixCount, 1);
         }
-        extendedCurve.insert(extendedCurve.end(), mCurvePoints.begin(), mCurvePoints.end());
-        extendedFusionWeights.insert(extendedFusionWeights.end(), mCurvePointFusionWeights.begin(), mCurvePointFusionWeights.end());
+        extendedCurve.insert(extendedCurve.end(), candidatePoints.begin(), candidatePoints.end());
+        extendedFusionWeights.insert(extendedFusionWeights.end(), candidateWeights.begin(), candidateWeights.end());
         if (suffixCount > 0)
         {
             extendedCurve.insert(extendedCurve.end(), orientedWorldPoints.begin() + lastOverlapIndex + 1, orientedWorldPoints.end());
             extendedFusionWeights.insert(extendedFusionWeights.end(), suffixCount, 1);
         }
+        if (fusedPointCount == 0 && prefixCount == 0 && suffixCount == 0)
+            return 0;
+
+        SmoothCurveGeometry(extendedCurve, *curveConfig);
+        if (!IsCurveGeometryAcceptable(extendedCurve, *curveConfig))
+            return 0;
+
         mCurvePoints.swap(extendedCurve);
         mCurvePointFusionWeights.swap(extendedFusionWeights);
-        if (fusedPointCount > 0 || prefixCount > 0 || suffixCount > 0)
-            SmoothGeometry(curveConfig);
         return prefixCount + suffixCount;
     }
 
@@ -326,15 +385,20 @@ namespace ORB_SLAM2
         unique_lock<mutex> lock(mMutexPos);
         if (mCurvePoints.size() < 2)
         {
+            if (!IsCurveGeometryAcceptable(otherPoints, *curveConfig))
+                return false;
             mCurvePoints = otherPoints;
             mCurvePointFusionWeights = otherWeights;
             return true;
         }
-        if (mCurvePointFusionWeights.size() != mCurvePoints.size())
-            mCurvePointFusionWeights.assign(mCurvePoints.size(), 1);
 
-        const double forwardEndpointCost = cv::norm(otherPoints.front() - mCurvePoints.front()) + cv::norm(otherPoints.back() - mCurvePoints.back());
-        const double reverseEndpointCost = cv::norm(otherPoints.front() - mCurvePoints.back()) + cv::norm(otherPoints.back() - mCurvePoints.front());
+        const std::vector<cv::Point3d> currentPoints = mCurvePoints;
+        std::vector<unsigned int> currentWeights = mCurvePointFusionWeights;
+        if (currentWeights.size() != currentPoints.size())
+            currentWeights.assign(currentPoints.size(), 1);
+
+        const double forwardEndpointCost = cv::norm(otherPoints.front() - currentPoints.front()) + cv::norm(otherPoints.back() - currentPoints.back());
+        const double reverseEndpointCost = cv::norm(otherPoints.front() - currentPoints.back()) + cv::norm(otherPoints.back() - currentPoints.front());
         if (reverseEndpointCost < forwardEndpointCost)
         {
             std::reverse(otherPoints.begin(), otherPoints.end());
@@ -351,27 +415,27 @@ namespace ORB_SLAM2
         std::vector<GeometryMatch> matches;
         std::vector<double> distances;
         size_t nextCurrentIndex = 0;
-        for (size_t otherIndex = 0; otherIndex < otherPoints.size() && nextCurrentIndex < mCurvePoints.size(); ++otherIndex)
+        for (size_t otherIndex = 0; otherIndex < otherPoints.size() && nextCurrentIndex < currentPoints.size(); ++otherIndex)
         {
-            size_t bestCurrentIndex = mCurvePoints.size();
+            size_t bestCurrentIndex = currentPoints.size();
             double bestDistance = std::numeric_limits<double>::max();
-            for (size_t currentIndex = nextCurrentIndex; currentIndex < mCurvePoints.size(); ++currentIndex)
+            for (size_t currentIndex = nextCurrentIndex; currentIndex < currentPoints.size(); ++currentIndex)
             {
-                const double distance = cv::norm(mCurvePoints[currentIndex] - otherPoints[otherIndex]);
+                const double distance = cv::norm(currentPoints[currentIndex] - otherPoints[otherIndex]);
                 if (distance < bestDistance)
                 {
                     bestDistance = distance;
                     bestCurrentIndex = currentIndex;
                 }
             }
-            if (bestCurrentIndex == mCurvePoints.size() || bestDistance > curveConfig->mapFusionMaximumP90Distance)
+            if (bestCurrentIndex == currentPoints.size() || bestDistance > curveConfig->mapFusionMaximumP90Distance)
                 continue;
             matches.push_back(GeometryMatch{bestCurrentIndex, otherIndex, bestDistance});
             distances.push_back(bestDistance);
             nextCurrentIndex = bestCurrentIndex + 1;
         }
 
-        const size_t shorterCurveSize = std::min(mCurvePoints.size(), otherPoints.size());
+        const size_t shorterCurveSize = std::min(currentPoints.size(), otherPoints.size());
         const double coverage = shorterCurveSize > 0 ? static_cast<double>(matches.size()) / static_cast<double>(shorterCurveSize) : 0.0;
         if (matches.size() < 2 || coverage < curveConfig->mapFusionMinimum3DCoverage)
             return false;
@@ -383,13 +447,15 @@ namespace ORB_SLAM2
         if (medianDistance > curveConfig->fusionMax3DDistance || p90Distance > curveConfig->mapFusionMaximumP90Distance)
             return false;
 
+        std::vector<cv::Point3d> candidatePoints = currentPoints;
+        std::vector<unsigned int> candidateWeights = currentWeights;
         for (const GeometryMatch &match : matches)
         {
-            const unsigned int currentWeight = std::max(1U, mCurvePointFusionWeights[match.currentIndex]);
+            const unsigned int currentWeight = std::max(1U, candidateWeights[match.currentIndex]);
             const unsigned int otherWeight = std::max(1U, otherWeights[match.otherIndex]);
             const double totalWeight = static_cast<double>(currentWeight) + static_cast<double>(otherWeight);
-            mCurvePoints[match.currentIndex] = (mCurvePoints[match.currentIndex] * static_cast<double>(currentWeight) + otherPoints[match.otherIndex] * static_cast<double>(otherWeight)) * (1.0 / totalWeight);
-            mCurvePointFusionWeights[match.currentIndex] = std::min(static_cast<unsigned int>(curveConfig->maximumFusionWeight), currentWeight + otherWeight);
+            candidatePoints[match.currentIndex] = (candidatePoints[match.currentIndex] * static_cast<double>(currentWeight) + otherPoints[match.otherIndex] * static_cast<double>(otherWeight)) * (1.0 / totalWeight);
+            candidateWeights[match.currentIndex] = std::min(static_cast<unsigned int>(curveConfig->maximumFusionWeight), currentWeight + otherWeight);
         }
 
         const auto directionCosine = [](const cv::Point3d &first, const cv::Point3d &second)
@@ -401,14 +467,14 @@ namespace ORB_SLAM2
         const GeometryMatch &firstMatch = matches.front();
         const GeometryMatch &lastMatch = matches.back();
         const size_t prefixCandidateCount = firstMatch.currentIndex == 0 ? firstMatch.otherIndex : 0;
-        const size_t suffixCandidateCount = lastMatch.currentIndex + 1 == mCurvePoints.size() ? otherPoints.size() - lastMatch.otherIndex - 1 : 0;
+        const size_t suffixCandidateCount = lastMatch.currentIndex + 1 == currentPoints.size() ? otherPoints.size() - lastMatch.otherIndex - 1 : 0;
 
         bool acceptPrefix = prefixCandidateCount >= static_cast<size_t>(curveConfig->minimumExtensionSamples);
         if (acceptPrefix)
         {
             const size_t lastPrefixIndex = firstMatch.otherIndex - 1;
-            const double gap = cv::norm(otherPoints[lastPrefixIndex] - mCurvePoints.front());
-            const double cosine = directionCosine(otherPoints[lastPrefixIndex] - otherPoints[lastPrefixIndex - 1], mCurvePoints[1] - mCurvePoints[0]);
+            const double gap = cv::norm(otherPoints[lastPrefixIndex] - candidatePoints.front());
+            const double cosine = directionCosine(otherPoints[lastPrefixIndex] - otherPoints[lastPrefixIndex - 1], candidatePoints[1] - candidatePoints[0]);
             acceptPrefix = gap <= curveConfig->extensionMax3DGap && cosine >= curveConfig->minimumJoinDirectionCosine;
         }
 
@@ -416,42 +482,67 @@ namespace ORB_SLAM2
         if (acceptSuffix)
         {
             const size_t firstSuffixIndex = lastMatch.otherIndex + 1;
-            const double gap = cv::norm(otherPoints[firstSuffixIndex] - mCurvePoints.back());
-            const double cosine = directionCosine(mCurvePoints.back() - mCurvePoints[mCurvePoints.size() - 2], otherPoints[firstSuffixIndex + 1] - otherPoints[firstSuffixIndex]);
+            const double gap = cv::norm(otherPoints[firstSuffixIndex] - candidatePoints.back());
+            const double cosine = directionCosine(candidatePoints.back() - candidatePoints[candidatePoints.size() - 2], otherPoints[firstSuffixIndex + 1] - otherPoints[firstSuffixIndex]);
             acceptSuffix = gap <= curveConfig->extensionMax3DGap && cosine >= curveConfig->minimumJoinDirectionCosine;
         }
 
         const size_t prefixCount = acceptPrefix ? prefixCandidateCount : 0;
         const size_t suffixCount = acceptSuffix ? suffixCandidateCount : 0;
+        std::vector<cv::Point3d> mergedPoints;
+        std::vector<unsigned int> mergedWeights;
         if (prefixCount > 0 || suffixCount > 0)
         {
-            std::vector<cv::Point3d> mergedPoints;
-            std::vector<unsigned int> mergedWeights;
-            mergedPoints.reserve(prefixCount + mCurvePoints.size() + suffixCount);
-            mergedWeights.reserve(prefixCount + mCurvePointFusionWeights.size() + suffixCount);
+            mergedPoints.reserve(prefixCount + candidatePoints.size() + suffixCount);
+            mergedWeights.reserve(prefixCount + candidateWeights.size() + suffixCount);
             if (prefixCount > 0)
             {
                 mergedPoints.insert(mergedPoints.end(), otherPoints.begin(), otherPoints.begin() + firstMatch.otherIndex);
                 mergedWeights.insert(mergedWeights.end(), otherWeights.begin(), otherWeights.begin() + firstMatch.otherIndex);
             }
-            mergedPoints.insert(mergedPoints.end(), mCurvePoints.begin(), mCurvePoints.end());
-            mergedWeights.insert(mergedWeights.end(), mCurvePointFusionWeights.begin(), mCurvePointFusionWeights.end());
+            mergedPoints.insert(mergedPoints.end(), candidatePoints.begin(), candidatePoints.end());
+            mergedWeights.insert(mergedWeights.end(), candidateWeights.begin(), candidateWeights.end());
             if (suffixCount > 0)
             {
                 mergedPoints.insert(mergedPoints.end(), otherPoints.begin() + lastMatch.otherIndex + 1, otherPoints.end());
                 mergedWeights.insert(mergedWeights.end(), otherWeights.begin() + lastMatch.otherIndex + 1, otherWeights.end());
             }
-            mCurvePoints.swap(mergedPoints);
-            mCurvePointFusionWeights.swap(mergedWeights);
         }
-        SmoothGeometry(curveConfig);
+        else
+        {
+            mergedPoints.swap(candidatePoints);
+            mergedWeights.swap(candidateWeights);
+        }
+
+        SmoothCurveGeometry(mergedPoints, *curveConfig);
+        if (!IsCurveGeometryAcceptable(mergedPoints, *curveConfig))
+            return false;
+
+        mCurvePoints.swap(mergedPoints);
+        mCurvePointFusionWeights.swap(mergedWeights);
         return true;
     }
 
     bool MapCurve::Replace(MapCurve *pSurvivor, const CurveConfigPtr &curveConfig)
     {
-        if (!pSurvivor || pSurvivor == this || pSurvivor->isBad() || !pSurvivor->MergeGeometryFrom(this, curveConfig))
+        unique_lock<mutex> lifecycleLock(mGlobalMutex);
+        if (!pSurvivor || pSurvivor == this || !curveConfig)
             return false;
+
+        {
+            unique_lock<mutex> featureLock(mMutexFeatures);
+            if (mbBad || mbReplacementInProgress)
+                return false;
+            mbReplacementInProgress = true;
+        }
+
+        if (pSurvivor->isBad() ||
+            !pSurvivor->MergeGeometryFrom(this, curveConfig))
+        {
+            unique_lock<mutex> featureLock(mMutexFeatures);
+            mbReplacementInProgress = false;
+            return false;
+        }
 
         map<KeyFrame *, vector<size_t>> observations;
         int visibleCount = 0;
@@ -465,6 +556,7 @@ namespace ORB_SLAM2
             visibleCount = mnVisible;
             foundCount = mnFound;
             mbBad = true;
+            mbReplacementInProgress = false;
             mpReplaced = pSurvivor;
         }
 
@@ -474,13 +566,11 @@ namespace ORB_SLAM2
             for (const size_t curveIndex : observation.second)
             {
                 MapCurve *pCurrent = pKF->GetMapCurve(curveIndex);
-                if (pCurrent == this)
+                if (pCurrent == this || pCurrent == pSurvivor)
                 {
-                    pKF->ReplaceMapCurveMatch(curveIndex, pSurvivor);
-                    pSurvivor->AddObservation(pKF, curveIndex);
+                    pSurvivor->AssociateWithKeyFrameLocked(
+                        pKF, curveIndex, pCurrent);
                 }
-                else if (pCurrent == pSurvivor)
-                    pSurvivor->AddObservation(pKF, curveIndex);
             }
         }
 
@@ -538,10 +628,18 @@ namespace ORB_SLAM2
 
     void ORB_SLAM2::MapCurve::SetBadFlag()
     {
+        unique_lock<mutex> lifecycleLock(mGlobalMutex);
+        SetBadFlagLocked();
+    }
+
+    void MapCurve::SetBadFlagLocked()
+    {
         map<KeyFrame *, vector<size_t>> observations;
         {
             unique_lock<mutex> lock1(mMutexFeatures);
             unique_lock<mutex> lock2(mMutexPos);
+            if (mbBad)
+                return;
             mbBad = true;
             observations = mObservations;
             mObservations.clear();
@@ -552,8 +650,8 @@ namespace ORB_SLAM2
             KeyFrame *pKF = mit->first;
             for (const size_t curveIndex : mit->second)
             {
-                if (pKF->GetMapCurve(curveIndex) == this)
-                    pKF->EraseMapCurveMatch(curveIndex);
+                pKF->ReplaceMapCurveMatch(
+                    curveIndex, this, NULL);
             }
         }
 

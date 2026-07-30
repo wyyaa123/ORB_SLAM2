@@ -18,13 +18,14 @@ namespace ORB_SLAM2
         bool enabled;
         float minDepth;
         float maxDepth;
-        float validRatio;
         int BezierFitter;
 
         // Curve depth denoising parameters.
         int depthMedianWindow;
         float maxNeighborDepthJump;
         float maxNeighborDepthJumpRatio;
+        int minimumDepthSegmentSamples;
+        float depthSegmentMax3DGap;
         int minimumExtensionSamples;
         float fusionMaxPixelDistance;
         float fusionMax3DDistance;
@@ -32,6 +33,18 @@ namespace ORB_SLAM2
         float extensionMax3DGap;
         float minimumJoinDirectionCosine;
         float geometrySmoothingWeight;
+        float geometryQualityReferenceSpacing;
+        float geometryQualityHighTurnDegrees;
+        float geometryQualityMinimumBendDegrees;
+        float geometryQualityHardUTurnDegrees;
+        float geometryQualityMaximumHighTurnRatio;
+        float geometryQualityMaximumBendFlipRatio;
+        float geometryQualityBendFlipCosine;
+        float geometryQualityMaximumBendSeparation;
+        int geometryQualityMinimumHighTurns;
+        int geometryQualityMinimumBendFlips;
+        int geometryQualityMinimumHardUTurns;
+        int geometryQualityCullingMinAge;
         int maximumFusionWeight;
         float mapFusionMinimum3DCoverage;
         float mapFusionMaximumP90Distance;

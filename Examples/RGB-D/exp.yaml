@@ -75,14 +75,16 @@ Curve.UseCurve: 1
 Curve.BezierFitter: 1
 Curve.MinDepth: 0.02
 Curve.MaxDepth: 3.0
-Curve.ValidRatio: 0.7
 # 沿曲线采样顺序使用奇数窗口做深度中值滤波。
 Curve.DepthMedianWindow: 5
 # 孤立深度尖峰判定阈值：绝对阈值（米）和相对阈值取较大者。
-Curve.MaxNeighborDepthJump: 0.08
-Curve.MaxNeighborDepthJumpRatio: 0.03
+Curve.MaxNeighborDepthJump: 0.05
+Curve.MaxNeighborDepthJumpRatio: 0.02
+# 无效深度或相邻三维间隔过大时切成独立曲线片段。
+Curve.MinimumDepthSegmentSamples: 4
+Curve.DepthSegmentMax3DGap: 0.15
 # 只有当前关键帧比地图曲线至少多出这些连续采样点时才允许延长。
-Curve.MinimumExtensionSamples: 3
+Curve.MinimumExtensionSamples: 2
 # 重叠点融合门限以及新旧曲线拼接门限。
 Curve.FusionMaxPixelDistance: 6.0
 Curve.FusionMax3DDistance: 0.10
@@ -91,12 +93,27 @@ Curve.ExtensionMax3DGap: 0.15
 Curve.MinimumJoinDirectionCosine: 0.5
 # 每次关键帧融合后的轻度三维平滑权重以及单点最大融合权重。
 Curve.GeometrySmoothingWeight: 0.15
+# 高频折线质量门控：同时满足大转角多、弯曲方向频繁反转时判为噪声。
+# 用该三维弧长（米）归一化单位长度内的大转角频率。
+Curve.GeometryQualityReferenceSpacing: 0.02
+Curve.GeometryQualityHighTurnDegrees: 30.0
+Curve.GeometryQualityMinimumBendDegrees: 10.0
+Curve.GeometryQualityHardUTurnDegrees: 150.0
+Curve.GeometryQualityMaximumHighTurnRatio: 0.25
+Curve.GeometryQualityMaximumBendFlipRatio: 0.25
+Curve.GeometryQualityBendFlipCosine: -0.3
+# 只有沿曲线相距不超过该弧长（米）的弯曲事件才计为“高频”反转。
+Curve.GeometryQualityMaximumBendSeparation: 0.15
+Curve.GeometryQualityMinimumHighTurns: 2
+Curve.GeometryQualityMinimumBendFlips: 2
+Curve.GeometryQualityMinimumHardUTurns: 2
+Curve.GeometryQualityCullingMinAge: 2
 Curve.MaximumFusionWeight: 10
 # 两条MapCurve真正合并前要求的三维重叠覆盖率和90%分位距离（米）。
-Curve.MapFusionMinimum3DCoverage: 0.5
-Curve.MapFusionMaximumP90Distance: 0.15
-Curve.MatchSearchRadius: 3
+Curve.MapFusionMinimum3DCoverage: 0.1
+Curve.MapFusionMaximumP90Distance: 0.50
+Curve.MatchSearchRadius: 6
 
 Curve.MinCandidateHits: 2 # 搜索半径内覆盖的采样点数
 Curve.MinCandidateCoverage: 0.1
-Curve.UnmatchedCost: 2.0 # 匹配代价
+Curve.UnmatchedCost: 6.0 # 匹配代价

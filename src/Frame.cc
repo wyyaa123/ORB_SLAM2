@@ -19,6 +19,7 @@
  */
 
 #include "Frame.h"
+#include "Curve/CurveGeometry.h"
 #include "Converter.h"
 #include "ORBmatcher.h"
 #include <algorithm>
@@ -349,12 +350,22 @@ namespace ORB_SLAM2
                               {
                                   const Edge &edge = vEdges[edgeIndex];
                                   std::vector<BezierCurve> bezierCurves = bezierFitter.fitAdaptive(edge, edgeIndex);
+                                  size_t nextContinuityGroupId = 0;
+                                  size_t currentContinuityGroupId = 0;
+                                  bool hasPreviousDepthSegment = false;
+                                  size_t previousBezierSegmentIndex = 0;
+                                  ContinuousCurveSegment previousDepthSegment;
 
                                   for (BezierCurve &curve : bezierCurves)
                                   {
                                       curve.sampleByArcLengthSpacing(5);
 
                                       const size_t totalPointCount = curve.sampledPoints.size();
+                                      if (totalPointCount == 0)
+                                      {
+                                          hasPreviousDepthSegment = false;
+                                          continue;
+                                      }
                                       for (size_t j = 0; j < totalPointCount; ++j)
                                           assignProperty3DEach(curve.sampledPoints[j], depth, curveConfigPtr);
 
@@ -381,24 +392,53 @@ namespace ORB_SLAM2
                                           }
                                       }
 
-                                      int validPointCount = 0;
-                                      for (size_t j = 0; j < totalPointCount; ++j)
+                                      // Split first: a long invalid interval
+                                      // must not discard the valid runs on
+                                      // either side.
+                                      const std::vector<ContinuousCurveSegment> depthSegments =
+                                          SplitContinuousCurveSamples(
+                                              curve.sampledPoints,
+                                              *curveConfigPtr);
+                                      for (size_t fragmentIndex = 0;
+                                           fragmentIndex < depthSegments.size();
+                                           ++fragmentIndex)
                                       {
-                                          if (curve.sampledPoints[j].depth > curveConfigPtr->minDepth &&
-                                              curve.sampledPoints[j].depth < curveConfigPtr->maxDepth)
-                                              ++validPointCount;
-                                      }
+                                          const bool continuesPreviousSegment =
+                                              hasPreviousDepthSegment &&
+                                              CanShareCurveContinuityGroup(
+                                                  previousDepthSegment,
+                                                  previousBezierSegmentIndex,
+                                                  depthSegments[fragmentIndex],
+                                                  curve.segmentIndex,
+                                                  *curveConfigPtr);
+                                          if (!continuesPreviousSegment)
+                                              currentContinuityGroupId = nextContinuityGroupId++;
 
-                                      //-- 计算有效点比例
-                                      const float validRatio = static_cast<float>(validPointCount) / totalPointCount;
+                                          BezierCurve fragment = bezierFitter.fitSingleSegment(
+                                              depthSegments[fragmentIndex].samples,
+                                              curve.edgeChainId);
+                                          if (fragment.controlPoints.size() < 2)
+                                          {
+                                              hasPreviousDepthSegment = false;
+                                              continue;
+                                          }
 
-                                      if (validRatio >= curveConfigPtr->validRatio)
-                                      {
-                                          auto newEnd = std::remove_if(curve.sampledPoints.begin(), curve.sampledPoints.end(), [&curveConfigPtr](const auto &point)
-                                                                       { return point.depth <= curveConfigPtr->minDepth || point.depth >= curveConfigPtr->maxDepth; });
-                                          curve.sampledPoints.erase(newEnd, curve.sampledPoints.end());
-                                          acceptedCurves.push_back(std::move(curve));
+                                          fragment.sampledPoints =
+                                              depthSegments[fragmentIndex].samples;
+                                          fragment.segmentIndex = curve.segmentIndex;
+                                          fragment.segmentCount = curve.segmentCount;
+                                          fragment.depthFragmentIndex = fragmentIndex;
+                                          fragment.continuityGroupId = currentContinuityGroupId;
+                                          acceptedCurves.push_back(std::move(fragment));
+
+                                          previousDepthSegment =
+                                              depthSegments[fragmentIndex];
+                                          previousBezierSegmentIndex =
+                                              curve.segmentIndex;
+                                          hasPreviousDepthSegment = true;
                                       }
+                                      if (depthSegments.empty())
+                                          hasPreviousDepthSegment = false;
                                   }
                               }
                           });
@@ -413,7 +453,9 @@ namespace ORB_SLAM2
                   {
               if (a.edgeChainId != b.edgeChainId)
                   return a.edgeChainId < b.edgeChainId;
-              return a.segmentIndex < b.segmentIndex; });
+              if (a.segmentIndex != b.segmentIndex)
+                  return a.segmentIndex < b.segmentIndex;
+              return a.depthFragmentIndex < b.depthFragmentIndex; });
 
         NC = mvBezierCurves.size();
         mvpMapCurves = vector<MapCurve *>(NC, static_cast<MapCurve *>(NULL));
@@ -424,6 +466,23 @@ namespace ORB_SLAM2
 
     void Frame::assignProperty3DEach(orderedEdgePoint &pt, const cv::Mat &matDepth, const CurveConfigPtr &curveConfigPtr)
     {
+        pt.depth = 0.0f;
+        pt.x_3d = 0.0;
+        pt.y_3d = 0.0;
+        pt.z_3d = 0.0;
+        if (!curveConfigPtr ||
+            matDepth.empty() ||
+            matDepth.type() != CV_32F ||
+            !std::isfinite(pt.x) ||
+            !std::isfinite(pt.y) ||
+            pt.x < 0.0 ||
+            pt.x >= static_cast<double>(matDepth.cols) ||
+            pt.y < 0.0 ||
+            pt.y >= static_cast<double>(matDepth.rows))
+        {
+            return;
+        }
+
         int x_idx = pt.x;
         int y_idx = pt.y;
 
@@ -441,7 +500,10 @@ namespace ORB_SLAM2
                 int curr_y_idx = y_idx + y_bias;
 
                 //-- 判断该位置在不在图像区域里
-                if (curr_x_idx < mnMinX || curr_x_idx >= mnMaxX || curr_y_idx < mnMinY || curr_y_idx >= mnMaxY)
+                if (curr_x_idx < 0 || curr_x_idx >= matDepth.cols ||
+                    curr_y_idx < 0 || curr_y_idx >= matDepth.rows ||
+                    curr_x_idx < mnMinX || curr_x_idx >= mnMaxX ||
+                    curr_y_idx < mnMinY || curr_y_idx >= mnMaxY)
                     continue;
 
                 //-- 在图像区域里的话判断深度值是否有效

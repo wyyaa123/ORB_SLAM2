@@ -1,0 +1,31 @@
+%YAML:1.0
+
+Curve.UseCurve: 1
+Curve.MinDepth: 0.02
+Curve.MaxDepth: 4.0
+Curve.MinimumDepthSegmentSamples: 4
+Curve.DepthSegmentMax3DGap: 0.15
+
+Curve.MinimumExtensionSamples: 3
+Curve.FusionMaxPixelDistance: 6.0
+Curve.FusionMax3DDistance: 0.10
+Curve.ExtensionMaxPixelGap: 10.0
+Curve.ExtensionMax3DGap: 0.15
+Curve.MinimumJoinDirectionCosine: 0.5
+Curve.GeometrySmoothingWeight: 0.15
+Curve.MaximumFusionWeight: 10
+Curve.MapFusionMinimum3DCoverage: 0.5
+Curve.MapFusionMaximumP90Distance: 0.15
+
+Curve.GeometryQualityReferenceSpacing: 0.02
+Curve.GeometryQualityHighTurnDegrees: 30.0
+Curve.GeometryQualityMinimumBendDegrees: 10.0
+Curve.GeometryQualityHardUTurnDegrees: 150.0
+Curve.GeometryQualityMaximumHighTurnRatio: 0.25
+Curve.GeometryQualityMaximumBendFlipRatio: 0.25
+Curve.GeometryQualityBendFlipCosine: -0.3
+Curve.GeometryQualityMaximumBendSeparation: 0.15
+Curve.GeometryQualityMinimumHighTurns: 2
+Curve.GeometryQualityMinimumBendFlips: 2
+Curve.GeometryQualityMinimumHardUTurns: 2
+Curve.GeometryQualityCullingMinAge: 2
