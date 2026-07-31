@@ -125,6 +125,8 @@ int main(int argc, char **argv)
         //     usleep((T - ttrack) * 1e6);
     }
 
+    // sleep(100); // wait for the last loop to finish
+
     // Stop all threads
     SLAM.Shutdown();
 
@@ -163,7 +165,7 @@ void LoadImages(const string &strAssociationFilename, vector<string> &vstrImageF
             double t;
             string sRGB, sD, sSem;
             ss >> t;
-            vTimestamps.push_back(t * 1e-9);
+            vTimestamps.push_back(t);
             ss >> sRGB;
             vstrImageFilenamesRGB.push_back(sRGB);
             ss >> t;

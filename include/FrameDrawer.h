@@ -51,6 +51,7 @@ namespace ORB_SLAM2
         // Draw the current curves in the frame.
         cv::Mat DrawFrameCurves();
         cv::Mat DrawCurveAssociations();
+        cv::Mat DrawCurveSampleCorrespondences();
 
     protected:
         void DrawTextInfo(cv::Mat &im, int nState, cv::Mat &imText);
@@ -67,6 +68,7 @@ namespace ORB_SLAM2
         vector<MapCurve *> mvpCurveAssociationMatches;
         vector<MapCurve *> mvpCurveAssociationCandidates;
         vector<CurveMatchDiagnostic> mvCurveMatchDiagnostics;
+        vector<CurveSampleCorrespondence> mvCurveSampleCorrespondences;
         int N;
         vector<cv::KeyPoint> mvCurrentKeys;
         vector<BezierCurve> mpCurrentCurves;

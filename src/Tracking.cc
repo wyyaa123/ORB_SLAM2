@@ -1514,7 +1514,7 @@ namespace ORB_SLAM2
     bool Tracking::NeedNewKeyFrame()
     {
 
-        if (!(mCurrentFrame.mnId % 15))
+        if (!(mCurrentFrame.mnId % 30))
             return true;
 
         if (mbOnlyTracking)

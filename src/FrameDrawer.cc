@@ -34,6 +34,33 @@
 
 namespace ORB_SLAM2
 {
+    namespace
+    {
+        void DrawDashedLine(cv::Mat &image, const cv::Point2d &first, const cv::Point2d &second,
+                            const cv::Scalar &color, const int thickness,
+                            const double dashLength = 6.0, const double gapLength = 4.0)
+        {
+            if (!std::isfinite(first.x) || !std::isfinite(first.y) ||
+                !std::isfinite(second.x) || !std::isfinite(second.y))
+                return;
+
+            const cv::Point2d delta = second - first;
+            const double length = cv::norm(delta);
+            if (length <= 1e-6)
+                return;
+
+            const cv::Point2d direction = delta * (1.0 / length);
+            for (double offset = 0.0; offset < length; offset += dashLength + gapLength)
+            {
+                const cv::Point2d dashBegin = first + direction * offset;
+                const cv::Point2d dashEnd = first + direction * std::min(length, offset + dashLength);
+                cv::line(image,
+                         cv::Point(cvRound(dashBegin.x), cvRound(dashBegin.y)),
+                         cv::Point(cvRound(dashEnd.x), cvRound(dashEnd.y)),
+                         color, thickness, cv::LINE_AA);
+            }
+        }
+    }
 
     FrameDrawer::FrameDrawer(Map *pMap) : mpMap(pMap)
     {
@@ -175,6 +202,138 @@ namespace ORB_SLAM2
         }
 
         return im;
+    }
+
+    cv::Mat FrameDrawer::DrawCurveSampleCorrespondences()
+    {
+        cv::Mat image;
+        std::vector<BezierCurve> observedCurves;
+        std::vector<CurveSampleCorrespondence> correspondences;
+        {
+            std::unique_lock<std::mutex> lock(mMutex);
+            image = mIm.clone();
+            observedCurves = mvCurveAssociationCurves;
+            correspondences = mvCurveSampleCorrespondences;
+        }
+
+        if (image.empty())
+            return cv::Mat();
+
+        cv::Mat colorImage;
+        if (image.channels() == 1)
+            cv::cvtColor(image, colorImage, cv::COLOR_GRAY2BGR);
+        else if (image.channels() == 3)
+            colorImage = image.clone();
+        else if (image.channels() == 4)
+            cv::cvtColor(image, colorImage, cv::COLOR_BGRA2BGR);
+        else
+            return cv::Mat();
+        colorImage.convertTo(colorImage, CV_8UC3, 0.65);
+
+        const cv::Scalar matchedBezierColor(80, 255, 80);
+        const cv::Scalar projectedCurveColor(255, 80, 255);
+        const cv::Scalar connectorColor(0, 255, 255);
+        const cv::Scalar observedPointColor(255, 255, 80);
+
+        cv::Mat projectedImage = colorImage.clone();
+        cv::Mat observedImage = colorImage.clone();
+        MapCurve *pDisplayedMapCurve = NULL;
+        for (const CurveSampleCorrespondence &correspondence : correspondences)
+        {
+            if (!correspondence.pMapCurve ||
+                !std::isfinite(correspondence.projectedPoint.x) ||
+                !std::isfinite(correspondence.projectedPoint.y) ||
+                !std::isfinite(correspondence.observedPoint.x) ||
+                !std::isfinite(correspondence.observedPoint.y))
+                continue;
+            if (!pDisplayedMapCurve || correspondence.pMapCurve->mnId < pDisplayedMapCurve->mnId)
+                pDisplayedMapCurve = correspondence.pMapCurve;
+        }
+
+        std::unordered_set<size_t> matchedObservedCurveIndices;
+        std::vector<cv::Point2f> projectedSamples;
+        size_t displayedCorrespondenceCount = 0;
+        for (const CurveSampleCorrespondence &correspondence : correspondences)
+        {
+            if (correspondence.pMapCurve != pDisplayedMapCurve ||
+                !std::isfinite(correspondence.projectedPoint.x) ||
+                !std::isfinite(correspondence.projectedPoint.y) ||
+                !std::isfinite(correspondence.observedPoint.x) ||
+                !std::isfinite(correspondence.observedPoint.y))
+                continue;
+
+            matchedObservedCurveIndices.insert(correspondence.observedCurveIndex);
+            projectedSamples.push_back(
+                cv::Point2f(static_cast<float>(correspondence.projectedPoint.x),
+                            static_cast<float>(correspondence.projectedPoint.y)));
+            ++displayedCorrespondenceCount;
+        }
+
+        for (size_t curveIndex = 0; curveIndex < observedCurves.size(); ++curveIndex)
+        {
+            if (matchedObservedCurveIndices.count(curveIndex) == 0)
+                continue;
+
+            std::vector<cv::Point2f> samples;
+            samples.reserve(observedCurves[curveIndex].sampledPoints.size());
+            for (const orderedEdgePoint &sample : observedCurves[curveIndex].sampledPoints)
+                samples.push_back(cv::Point2f(static_cast<float>(sample.x), static_cast<float>(sample.y)));
+
+            DrawSampledCurve(observedImage, samples, matchedBezierColor, 2);
+        }
+
+        DrawSampledCurve(projectedImage, projectedSamples, projectedCurveColor, 2);
+
+        cv::Mat correspondenceImage;
+        cv::hconcat(projectedImage, observedImage, correspondenceImage);
+        for (const CurveSampleCorrespondence &correspondence : correspondences)
+        {
+            if (correspondence.pMapCurve != pDisplayedMapCurve ||
+                !std::isfinite(correspondence.projectedPoint.x) ||
+                !std::isfinite(correspondence.projectedPoint.y) ||
+                !std::isfinite(correspondence.observedPoint.x) ||
+                !std::isfinite(correspondence.observedPoint.y))
+                continue;
+
+            const cv::Point2d observedPointInRightPanel(
+                correspondence.observedPoint.x + projectedImage.cols,
+                correspondence.observedPoint.y);
+            DrawDashedLine(correspondenceImage, correspondence.projectedPoint,
+                           observedPointInRightPanel, connectorColor, 1);
+
+            const cv::Point projectedPoint(cvRound(correspondence.projectedPoint.x),
+                                           cvRound(correspondence.projectedPoint.y));
+            const cv::Point observedPoint(cvRound(observedPointInRightPanel.x),
+                                          cvRound(correspondence.observedPoint.y));
+            cv::circle(correspondenceImage, projectedPoint, 3, projectedCurveColor, -1, cv::LINE_AA);
+            cv::drawMarker(correspondenceImage, observedPoint, observedPointColor,
+                           cv::MARKER_CROSS, 7, 1, cv::LINE_AA);
+        }
+
+        cv::line(correspondenceImage,
+                 cv::Point(projectedImage.cols, 0),
+                 cv::Point(projectedImage.cols, correspondenceImage.rows - 1),
+                 cv::Scalar(255, 255, 255), 1);
+
+        const auto drawPanelTitle = [&correspondenceImage](const cv::Point &origin, const std::string &text)
+        {
+            cv::putText(correspondenceImage, text, origin,
+                        cv::FONT_HERSHEY_SIMPLEX, 0.58, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+            cv::putText(correspondenceImage, text, origin,
+                        cv::FONT_HERSHEY_SIMPLEX, 0.58, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        };
+        const std::string mapCurveTitle = pDisplayedMapCurve
+                                              ? "MapCurve " + std::to_string(pDisplayedMapCurve->mnId) + " projection"
+                                              : "No matched MapCurve";
+        drawPanelTitle(cv::Point(12, 28), mapCurveTitle);
+        drawPanelTitle(cv::Point(projectedImage.cols + 12, 28), "Current Bezier curves");
+
+        const std::string countText = std::to_string(displayedCorrespondenceCount) + " fixed samples";
+        cv::putText(correspondenceImage, countText, cv::Point(12, correspondenceImage.rows - 12),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+        cv::putText(correspondenceImage, countText, cv::Point(12, correspondenceImage.rows - 12),
+                    cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+        return correspondenceImage;
     }
 
     cv::Scalar FrameDrawer::AssociationColor(const size_t colorIndex)
@@ -507,6 +666,7 @@ namespace ORB_SLAM2
         mvpCurveAssociationMatches = pTracker->mCurrentFrame.mvpMapCurves;
         mvpCurveAssociationCandidates = pTracker->mvpCurveAssociationCandidates;
         mvCurveMatchDiagnostics = pTracker->mCurrentFrame.mvCurveMatchDiagnostics;
+        mvCurveSampleCorrespondences = pTracker->mCurrentFrame.mvCurveSampleCorrespondences;
         mvCurrentKeys = pTracker->mCurrentFrame.mvKeys;
         mpCurrentCurves = pTracker->mCurrentFrame.mvBezierCurves;
         N = mvCurrentKeys.size();

@@ -282,7 +282,7 @@ namespace ORB_SLAM2
         const float deltaMono = sqrt(5.991);
         const float deltaStereo = sqrt(7.815);
         const double curveSigma = 2.0;
-        const double curveWeight = 20.0;
+        const double curveWeight = 1.0;
         const double curveRobustPixelDelta = 6.0;
 
         {
@@ -379,8 +379,8 @@ namespace ORB_SLAM2
         {
             if (!correspondence.pMapCurve || correspondence.observedCurveIndex >= pFrame->mvpMapCurves.size() || pFrame->mvpMapCurves[correspondence.observedCurveIndex] != correspondence.pMapCurve || correspondence.normalizedWeight <= 0.0)
                 continue;
-            if (!std::isfinite(correspondence.worldPoint.x) || !std::isfinite(correspondence.worldPoint.y) || !std::isfinite(correspondence.worldPoint.z) || !std::isfinite(correspondence.observedPoint.x) || !std::isfinite(correspondence.observedPoint.y) || !std::isfinite(correspondence.observedNormal.x) || !std::isfinite(correspondence.observedNormal.y))
-                continue;
+            // if (!std::isfinite(correspondence.worldPoint.x) || !std::isfinite(correspondence.worldPoint.y) || !std::isfinite(correspondence.worldPoint.z) || !std::isfinite(correspondence.observedPoint.x) || !std::isfinite(correspondence.observedPoint.y) || !std::isfinite(correspondence.observedNormal.x) || !std::isfinite(correspondence.observedNormal.y))
+            //     continue;
 
             const double normalLength = cv::norm(correspondence.observedNormal);
             if (normalLength <= 1e-9)

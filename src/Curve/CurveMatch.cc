@@ -548,6 +548,7 @@ namespace ORB_SLAM2
                 CurveSampleCorrespondence correspondence;
                 correspondence.pMapCurve = pMapCurve;
                 correspondence.worldPoint = worldPoint;
+                correspondence.projectedPoint = cv::Point2d(projectedPoint.x, projectedPoint.y);
                 correspondence.observedPoint = bestPoint;
                 correspondence.observedNormal = bestNormal;
                 correspondence.observedCurveIndex = bestCurveIndex;
@@ -579,7 +580,7 @@ namespace ORB_SLAM2
                 CurveSampleCorrespondence &correspondence = curveCorrespondences[sampleIndex];
                 double confidence = std::exp(-correspondence.initialDistance * correspondence.initialDistance * inverseConfidenceVariance);
                 if (correspondence.observedParameter <= 0.02 || correspondence.observedParameter >= 0.98)
-                    confidence *= 0.25;
+                    confidence *= 0.01;
                 correspondence.normalizedWeight = arcLengthWeights[sampleIndex] * std::max(1e-3, confidence) / totalArcLengthWeight;
                 frame.mvCurveSampleCorrespondences.push_back(correspondence);
             }

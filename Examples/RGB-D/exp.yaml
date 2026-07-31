@@ -71,9 +71,9 @@ Viewer.ViewpointF: 500
 #--------------------------------------------------------------------------------------------
 # Edge Parameters
 #--------------------------------------------------------------------------------------------
-Curve.UseCurve: 1
+Curve.UseCurve: 0
 Curve.BezierFitter: 1
-Curve.MinDepth: 0.02
+Curve.MinDepth: 0
 Curve.MaxDepth: 3.0
 Curve.ValidRatio: 0.7
 # 沿曲线采样顺序使用奇数窗口做深度中值滤波。
@@ -93,7 +93,7 @@ Curve.MinimumJoinDirectionCosine: 0.5
 Curve.GeometrySmoothingWeight: 0.15
 Curve.MaximumFusionWeight: 10
 # 两条MapCurve真正合并前要求的三维重叠覆盖率和90%分位距离（米）。
-Curve.MapFusionMinimum3DCoverage: 0.5
+Curve.MapFusionMinimum3DCoverage: 0.1
 Curve.MapFusionMaximumP90Distance: 0.15
 Curve.MatchSearchRadius: 3
 

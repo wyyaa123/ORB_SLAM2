@@ -15,6 +15,7 @@ namespace ORB_SLAM2
 
         MapCurve *pMapCurve;
         cv::Point3d worldPoint;
+        cv::Point2d projectedPoint;
         cv::Point2d observedPoint;
         cv::Point2d observedNormal;
         std::size_t observedCurveIndex;

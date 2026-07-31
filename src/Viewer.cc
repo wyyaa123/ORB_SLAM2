@@ -189,10 +189,13 @@ namespace ORB_SLAM2
                     cv::imshow("ORB-SLAM2: Curve Associations", imCurveAssociations);
                     if (menuStepByStep && menuStep)
                     {
-                        cv::imwrite(to_string(frameCounter) + "_curve_associations.png", imCurveAssociations);
+                        cv::imwrite("/home/wyyaa123/ORB_SLAM2/output/" + to_string(frameCounter) + "_curve_associations.png", imCurveAssociations);
                         ++frameCounter;
                     }
                 }
+                cv::Mat imCurveSampleCorrespondences = mpFrameDrawer->DrawCurveSampleCorrespondences();
+                if (!imCurveSampleCorrespondences.empty())
+                    cv::imshow("ORB-SLAM2: Curve Sample Correspondences", imCurveSampleCorrespondences);
             }
 
             cv::waitKey(mT);
